@@ -55,8 +55,14 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, resolutio
             audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
         )
     else:
-        from osmium.analyzer.mimi import encode as mimi_encode
-        from osmium.analyzer.importance import compute_importance, resample_importance
+        try:
+            from osmium.analyzer.mimi import encode as mimi_encode
+            from osmium.analyzer.importance import compute_importance, resample_importance
+        except ImportError:
+            raise click.ClickException(
+                "Neural analysis requires: uv pip install -e '.[neural]'\n"
+                "Or use --no-model for uniform-rate mode."
+            )
 
         t1 = time.time()
         click.echo("  analyzing (mimi)...", err=True)

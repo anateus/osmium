@@ -9,6 +9,12 @@ dependencies = [
     "soundfile>=0.12",
 ]
 
+[project.optional-dependencies]
+neural = [
+    "moshi_mlx>=0.3.0",
+    "huggingface_hub>=0.28",
+]
+
 [project.scripts]
 osmium = "osmium.cli:main"
 
