@@ -1,5 +1,4 @@
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 
@@ -15,7 +14,7 @@ class ChunkSpec:
 def plan_chunks(
     total_samples: int,
     sample_rate: int,
-    chunk_duration: float = 3600.0,
+    chunk_duration: float = 300.0,
     overlap_duration: float = 1.0,
 ) -> list[ChunkSpec]:
     chunk_samples = int(chunk_duration * sample_rate)
@@ -41,24 +40,7 @@ def plan_chunks(
     return chunks
 
 
-def _process_chunk_vocos(args: tuple) -> tuple[int, int, np.ndarray]:
-    chunk_data, speed, sample_rate, rate_info, overlap_before, overlap_after, smoothing = args
-
-    from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
-
-    if rate_info is not None:
-        rate_curve, rate_times = rate_info
-        output = vocos_variable_rate(chunk_data, rate_curve, rate_times, sample_rate, smoothing)
-    else:
-        output = vocos_stretch(chunk_data, speed, sample_rate, smoothing)
-
-    out_overlap_before = int(overlap_before / speed) if overlap_before > 0 else 0
-    out_overlap_after = int(overlap_after / speed) if overlap_after > 0 else 0
-
-    return (out_overlap_before, out_overlap_after, output)
-
-
-def process_parallel(
+def process_chunked(
     samples: np.ndarray,
     speed: float,
     sample_rate: int = 24000,
@@ -66,21 +48,21 @@ def process_parallel(
     overlap_duration: float = 1.0,
     rate_curve: np.ndarray | None = None,
     rate_times: np.ndarray | None = None,
-    max_workers: int | None = None,
     smoothing: float = 0.7,
     on_progress=None,
 ) -> np.ndarray:
     chunks = plan_chunks(len(samples), sample_rate, chunk_duration, overlap_duration)
 
-    if len(chunks) == 1:
-        rate_info = (rate_curve, rate_times) if rate_curve is not None else None
-        _, _, output = _process_chunk_vocos((
-            samples, speed, sample_rate,
-            rate_info, 0, 0, smoothing,
-        ))
-        return output
+    try:
+        from osmium.tsm.vocos_mlx import vocos_mlx_stretch, vocos_mlx_variable_rate
+        stretch_fn = vocos_mlx_stretch
+        vr_fn = vocos_mlx_variable_rate
+    except (ImportError, Exception):
+        from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
+        stretch_fn = vocos_stretch
+        vr_fn = vocos_variable_rate
 
-    args_list = []
+    output_parts = []
     for chunk in chunks:
         chunk_data = samples[chunk.start_sample:chunk.end_sample].copy()
 
@@ -97,63 +79,34 @@ def process_parallel(
                     (chunk_start_time + chunk_end_time) / 2, rate_times, rate_curve
                 ))
                 chunk_rate_curve = np.array([avg_rate, avg_rate])
-            rate_info = (chunk_rate_curve, chunk_rate_times)
+            output = vr_fn(chunk_data, chunk_rate_curve, chunk_rate_times, sample_rate, smoothing)
         else:
-            rate_info = None
+            output = stretch_fn(chunk_data, speed, sample_rate, smoothing)
 
-        args_list.append((
-            chunk_data, speed, sample_rate,
-            rate_info, chunk.overlap_before, chunk.overlap_after, smoothing,
-        ))
+        ob = int(chunk.overlap_before / speed) if chunk.overlap_before > 0 else 0
+        oa = int(chunk.overlap_after / speed) if chunk.overlap_after > 0 else 0
 
-    results = []
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_process_chunk_vocos, args): i for i, args in enumerate(args_list)}
-        for future in futures:
-            idx = futures[future]
-            result = future.result()
-            results.append((idx, result))
-            if on_progress:
-                on_progress(idx + 1, len(chunks))
+        _append_with_crossfade(output_parts, output, ob, oa, chunk.index, len(chunks))
 
-    results.sort(key=lambda x: x[0])
+        if on_progress:
+            on_progress(chunk.index + 1, len(chunks))
 
-    output_parts = []
-    for i, (_, (ob, oa, data)) in enumerate(results):
-        if i == 0:
-            if oa > 0:
-                output_parts.append(data[:-oa])
-            else:
-                output_parts.append(data)
-        elif i == len(results) - 1:
-            if ob > 0:
-                prev = output_parts[-1]
-                xfade_len = min(ob, len(prev), len(data))
-                if xfade_len > 0:
-                    fade = np.linspace(0, 1, xfade_len, dtype=np.float32)
-                    blended = prev[-xfade_len:] * (1 - fade) + data[:xfade_len] * fade
-                    output_parts[-1] = prev[:-xfade_len]
-                    output_parts.append(blended)
-                output_parts.append(data[xfade_len:])
-            else:
-                output_parts.append(data)
+    return np.concatenate(output_parts) if output_parts else np.array([], dtype=np.float32)
+
+
+def _append_with_crossfade(parts, data, ob, oa, idx, total):
+    if idx == 0:
+        parts.append(data[:-oa] if oa > 0 else data)
+    else:
+        if ob > 0 and parts:
+            prev = parts[-1]
+            xf = min(ob, len(prev), len(data))
+            if xf > 0:
+                fade = np.linspace(0, 1, xf, dtype=np.float32)
+                blended = prev[-xf:] * (1 - fade) + data[:xf] * fade
+                parts[-1] = prev[:-xf]
+                parts.append(blended)
+            trimmed = data[xf:-oa] if oa > 0 else data[xf:]
         else:
-            if ob > 0:
-                prev = output_parts[-1]
-                xfade_len = min(ob, len(prev), len(data))
-                if xfade_len > 0:
-                    fade = np.linspace(0, 1, xfade_len, dtype=np.float32)
-                    blended = prev[-xfade_len:] * (1 - fade) + data[:xfade_len] * fade
-                    output_parts[-1] = prev[:-xfade_len]
-                    output_parts.append(blended)
-                if oa > 0:
-                    output_parts.append(data[xfade_len:-oa])
-                else:
-                    output_parts.append(data[xfade_len:])
-            else:
-                if oa > 0:
-                    output_parts.append(data[:-oa])
-                else:
-                    output_parts.append(data)
-
-    return np.concatenate(output_parts)
+            trimmed = data[:-oa] if oa > 0 else data
+        parts.append(trimmed)

@@ -80,29 +80,27 @@ class VocosMLX(nn.Module):
         window = mx.array(_get_window(n_fft))
         out_length = (T - 1) * hop + n_fft
 
-        full_real = mx.concatenate([real, mx.zeros_like(real[:, :, :0])], axis=2)
-        full_imag = mx.concatenate([imag, mx.zeros_like(imag[:, :, :0])], axis=2)
-
-        spec = full_real + 1j * full_imag
+        spec = real + 1j * imag
         frames = mx.fft.irfft(spec, n=n_fft)
         frames = frames * window[None, None, :]
-
-        output = mx.zeros((B, out_length))
-        norm = mx.zeros((B, out_length))
+        mx.eval(frames)
 
         frames_np = np.array(frames)
-        output_np = np.zeros((B, out_length))
-        norm_np = np.zeros((B, out_length))
-        window_np = np.array(window)
+        window_sq = np.array(window) ** 2
 
-        for t in range(T):
-            start = t * hop
-            end = start + n_fft
-            output_np[:, start:end] += frames_np[:, t, :]
-            norm_np[:, start:end] += window_np ** 2
+        offsets = np.arange(T) * hop
+        indices = offsets[:, None] + np.arange(n_fft)[None, :]
+        flat_indices = indices.ravel()
+
+        output_np = np.zeros((B, out_length), dtype=np.float32)
+        norm_np = np.zeros(out_length, dtype=np.float32)
+
+        for b in range(B):
+            np.add.at(output_np[b], flat_indices, frames_np[b].ravel())
+        np.add.at(norm_np, flat_indices, np.tile(window_sq, T))
 
         norm_np = np.maximum(norm_np, 1e-8)
-        output_np = output_np / norm_np
+        output_np /= norm_np[None, :]
 
         trim = n_fft // 2
         output_np = output_np[:, trim:out_length - trim]

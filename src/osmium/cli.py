@@ -1,5 +1,4 @@
 import json
-import os
 import sys
 import time
 import click
@@ -18,10 +17,9 @@ from osmium.io.encode import encode, encode_pcm_stdout
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate")
 @click.option("--smoothing", default=0.7, type=float, help="Mel temporal smoothing sigma (0=off)")
-@click.option("--parallel", "parallel_chunks", type=float, default=0, help="Chunk duration in seconds for parallel processing (0=auto)")
-@click.option("--workers", type=int, default=0, help="Number of parallel workers (0=auto)")
+@click.option("--chunks", "parallel_chunks", type=float, default=0, help="Chunk duration in seconds for long files (0=auto for >10min)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, no_model, smoothing, parallel_chunks, workers, analyze_only):
+def main(input_file, speed, output_file, stream, resolution, no_model, smoothing, parallel_chunks, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -36,10 +34,10 @@ def main(input_file, speed, output_file, stream, resolution, no_model, smoothing
     if stream:
         _stream_mode(input_file, speed)
     else:
-        _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothing, analyze_only, parallel_chunks, workers)
+        _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothing, analyze_only, parallel_chunks)
 
 
-def _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothing, analyze_only, parallel_chunks, workers):
+def _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothing, analyze_only, parallel_chunks):
     t0 = time.time()
     click.echo("  decoding...", err=True)
     audio = decode(input_file)
@@ -102,20 +100,20 @@ def _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothin
         )
         click.echo(f"  rate range: {rate_curve.min():.1f}x – {rate_curve.max():.1f}x", err=True)
 
-    use_parallel = parallel_chunks > 0 or duration > 600
+    use_chunked = parallel_chunks > 0 or duration > 600
     chunk_dur = parallel_chunks if parallel_chunks > 0 else 300.0
-    max_workers = workers if workers > 0 else min(os.cpu_count() or 1, max(1, int(duration / chunk_dur)))
 
-    if use_parallel and max_workers > 1:
-        click.echo(f"  vocos @ {speed}x ({max_workers} workers, {chunk_dur:.0f}s chunks)...", err=True)
-        from osmium.parallel import process_parallel
+    if use_chunked:
+        n_chunks = max(1, int(duration / chunk_dur))
+        click.echo(f"  vocos @ {speed}x ({n_chunks} chunks, {chunk_dur:.0f}s each)...", err=True)
+        from osmium.parallel import process_chunked
 
         def on_progress(done, total):
             click.echo(f"    chunk {done}/{total} complete", err=True)
 
-        output_samples = process_parallel(
+        output_samples = process_chunked(
             audio.samples, speed=speed, sample_rate=audio.sample_rate,
-            chunk_duration=chunk_dur, max_workers=max_workers,
+            chunk_duration=chunk_dur,
             rate_curve=rate_curve, rate_times=rate_times,
             smoothing=smoothing, on_progress=on_progress,
         )
