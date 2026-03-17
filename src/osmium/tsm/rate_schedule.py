@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 
 
 def uniform_rate_schedule(
@@ -18,17 +19,17 @@ def importance_to_rate_schedule(
     target_speed: float,
     min_rate: float = 1.0,
     max_rate: float = 10.0,
-    smoothing_window: int = 5,
+    smoothing_sigma: float = 15.0,
+    max_rate_change: float = 0.3,
 ) -> tuple[np.ndarray, np.ndarray]:
     imp = importance.copy()
-    if smoothing_window > 1:
-        kernel = np.ones(smoothing_window) / smoothing_window
-        imp = np.convolve(imp, kernel, mode="same")
-
     imp = np.clip(imp, 0, 1)
 
-    inv_importance = 1.0 - imp
+    if smoothing_sigma > 0 and len(imp) > 1:
+        imp = gaussian_filter1d(imp, sigma=smoothing_sigma)
+        imp = np.clip(imp, 0, 1)
 
+    inv_importance = 1.0 - imp
     raw_rates = min_rate + inv_importance * (max_rate - min_rate)
 
     dt = np.diff(importance_times, prepend=0)
@@ -52,6 +53,20 @@ def importance_to_rate_schedule(
         output_durations = dt / rates
         current_output = output_durations.sum()
         if abs(current_output - target_output_duration) / target_output_duration < 0.001:
+            break
+        adjustment = current_output / target_output_duration
+        rates *= adjustment
+        rates = np.clip(rates, min_rate, max_rate)
+
+    for i in range(1, len(rates)):
+        delta = rates[i] - rates[i - 1]
+        if abs(delta) > max_rate_change:
+            rates[i] = rates[i - 1] + np.sign(delta) * max_rate_change
+
+    for _ in range(10):
+        output_durations = dt / rates
+        current_output = output_durations.sum()
+        if abs(current_output - target_output_duration) / target_output_duration < 0.002:
             break
         adjustment = current_output / target_output_duration
         rates *= adjustment

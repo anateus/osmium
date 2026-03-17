@@ -143,20 +143,25 @@ def variable_rate_phase_vocoder(
     freq_bins = window_size // 2 + 1
     expected_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
 
+    frame_rates = np.array([
+        float(np.interp(i * hop_analysis / sample_rate, rate_times, rate_curve))
+        for i in range(n_frames)
+    ])
+    hop_synth_float = hop_analysis / frame_rates
+    hop_synth_arr = np.maximum(1, np.round(hop_synth_float)).astype(int)
+
     prev_phase = None
     prev_synth_phase = None
     output_pos = 0
 
     safe_min = max(0.1, float(np.min(rate_curve)))
-    max_output = int(len(samples_padded) / safe_min * 1.1)
+    max_output = int(len(samples_padded) / safe_min * 1.2)
     output = np.zeros(max_output, dtype=np.float64)
     window_sum = np.zeros(max_output, dtype=np.float64)
 
     for i in range(n_frames):
         start = i * hop_analysis
-        frame_time = start / sample_rate
-        local_rate = float(np.interp(frame_time, rate_times, rate_curve))
-        hop_synthesis = max(1, int(hop_analysis / local_rate))
+        hop_synthesis = int(hop_synth_arr[i])
         hop_ratio = hop_synthesis / hop_analysis
 
         frame = samples_padded[start:start + window_size] * window
