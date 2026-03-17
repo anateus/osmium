@@ -100,6 +100,20 @@ def _detect_voiced_crepe(samples, sample_rate, n_frames, frame_size, energy_thre
     return voiced
 
 
+def _crossfade_append(output_parts, stretched, crossfade_samples):
+    if output_parts and crossfade_samples > 0:
+        prev = output_parts[-1]
+        xf = min(crossfade_samples, len(prev), len(stretched))
+        if xf > 1:
+            fade = np.linspace(0, 1, xf, dtype=np.float32)
+            blended = prev[-xf:] * (1 - fade) + stretched[:xf] * fade
+            output_parts[-1] = prev[:-xf]
+            output_parts.append(blended)
+            output_parts.append(stretched[xf:])
+            return
+    output_parts.append(stretched)
+
+
 def hybrid_voiced_stretch(
     samples: np.ndarray,
     speed: float,
@@ -111,11 +125,11 @@ def hybrid_voiced_stretch(
 
     segments = detect_voiced_segments(samples, sample_rate)
     crossfade_samples = int(0.005 * sample_rate)
+    min_psola_samples = int(0.1 * sample_rate)
 
     output_parts = []
     for seg in segments:
         chunk = samples[seg.start:seg.end]
-        min_psola_samples = int(0.1 * sample_rate)
         if len(chunk) < 512:
             stretched = phase_vocoder_stretch(chunk, speed, window_size=256, sample_rate=sample_rate)
         elif seg.is_voiced and len(chunk) >= min_psola_samples:
@@ -126,19 +140,7 @@ def hybrid_voiced_stretch(
         else:
             stretched = phase_vocoder_stretch(chunk, speed, window_size=window_size, sample_rate=sample_rate)
 
-        if output_parts and crossfade_samples > 0:
-            prev = output_parts[-1]
-            xf = min(crossfade_samples, len(prev), len(stretched))
-            if xf > 1:
-                fade = np.linspace(0, 1, xf, dtype=np.float32)
-                blended = prev[-xf:] * (1 - fade) + stretched[:xf] * fade
-                output_parts[-1] = prev[:-xf]
-                output_parts.append(blended)
-                output_parts.append(stretched[xf:])
-            else:
-                output_parts.append(stretched)
-        else:
-            output_parts.append(stretched)
+        _crossfade_append(output_parts, stretched, crossfade_samples)
 
     if not output_parts:
         return np.array([], dtype=np.float32)
@@ -157,6 +159,7 @@ def hybrid_voiced_variable_rate(
 
     segments = detect_voiced_segments(samples, sample_rate)
     crossfade_samples = int(0.005 * sample_rate)
+    min_psola_samples = int(0.1 * sample_rate)
 
     output_parts = []
     for seg in segments:
@@ -164,7 +167,6 @@ def hybrid_voiced_variable_rate(
         seg_time = seg.start / sample_rate
         local_rate = float(np.interp(seg_time, rate_times, rate_curve))
 
-        min_psola_samples = int(0.1 * sample_rate)
         if len(chunk) < 512:
             stretched = phase_vocoder_stretch(chunk, local_rate, window_size=256, sample_rate=sample_rate)
         elif seg.is_voiced and len(chunk) >= min_psola_samples:
@@ -175,19 +177,7 @@ def hybrid_voiced_variable_rate(
         else:
             stretched = phase_vocoder_stretch(chunk, local_rate, window_size=window_size, sample_rate=sample_rate)
 
-        if output_parts and crossfade_samples > 0:
-            prev = output_parts[-1]
-            xf = min(crossfade_samples, len(prev), len(stretched))
-            if xf > 1:
-                fade = np.linspace(0, 1, xf, dtype=np.float32)
-                blended = prev[-xf:] * (1 - fade) + stretched[:xf] * fade
-                output_parts[-1] = prev[:-xf]
-                output_parts.append(blended)
-                output_parts.append(stretched[xf:])
-            else:
-                output_parts.append(stretched)
-        else:
-            output_parts.append(stretched)
+        _crossfade_append(output_parts, stretched, crossfade_samples)
 
     if not output_parts:
         return np.array([], dtype=np.float32)

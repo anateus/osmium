@@ -103,6 +103,22 @@ MLX opens several avenues for improvement:
 
 ---
 
+## 2026-03-17: Neural vocoder approach (Vocos) — future option
+
+Mel-spectrogram resample + neural vocoder as an alternative to signal-level TSM:
+1. Compute mel-spectrogram from input speech
+2. Resample mel along time axis (numpy interpolation) — this IS time stretching
+3. Feed resampled mel to Vocos (or HiFi-GAN) neural vocoder to generate waveform
+4. Variable rate: non-uniform resampling guided by importance map
+
+Advantages: completely sidesteps phase vocoder artifacts and PSOLA pitch mark issues. Mel captures formants, pitch, energy; vocoder handles phase/waveform generation naturally.
+
+Vocos (github.com/gemelo-ai/vocos) works in frequency domain (ISTFT-based), is very fast, and has pre-trained models on HuggingFace. Could potentially port to MLX.
+
+**Decision:** Deferred to future phase. Currently exploring Mimi codec latent-space resynthesis (approach 2) first.
+
+---
+
 ## 2026-03-16: HPSS — introduces discontinuities
 
 Separately stretching harmonic/percussive components and recombining creates timing misalignment artifacts. Worse than single-path phase vocoder.

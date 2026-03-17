@@ -5,20 +5,132 @@ from osmium.analyzer.crepe_mlx import predict as crepe_predict, PitchResult
 def detect_gci(
     samples: np.ndarray,
     sample_rate: int = 24000,
-    lpc_order: int = 12,
     confidence_threshold: float = 0.5,
+    method: str = "zfr",
 ) -> tuple[np.ndarray, PitchResult]:
     pitch_result = crepe_predict(samples, sample_rate, capacity="tiny")
 
-    residual = _lpc_residual(samples, lpc_order, sample_rate)
-
-    gcis = _find_gcis(
-        residual, samples,
-        pitch_result.pitch, pitch_result.confidence,
-        sample_rate, confidence_threshold,
-    )
+    if method == "zfr":
+        raw_crossings = detect_gci_zfr(samples, sample_rate)
+        gcis = _select_gcis_with_f0(
+            raw_crossings, pitch_result, sample_rate, confidence_threshold,
+        )
+    else:
+        residual = _lpc_residual(samples, 12, sample_rate)
+        gcis = _find_gcis_lp(
+            residual, samples,
+            pitch_result.pitch, pitch_result.confidence,
+            sample_rate, confidence_threshold,
+        )
 
     return gcis, pitch_result
+
+
+def _select_gcis_with_f0(
+    crossings: np.ndarray,
+    pitch_result: PitchResult,
+    sample_rate: int,
+    confidence_threshold: float,
+) -> np.ndarray:
+    if len(crossings) == 0:
+        return crossings
+
+    crepe_hop = int(sample_rate * 0.01)
+    n_samples = len(pitch_result.pitch) * crepe_hop
+    gcis = []
+    pos = 0
+
+    def _f0_at(sample_pos: int) -> tuple[float, float]:
+        idx = min(sample_pos // crepe_hop, len(pitch_result.pitch) - 1)
+        idx = max(0, idx)
+        return float(pitch_result.pitch[idx]), float(pitch_result.confidence[idx])
+
+    def _find_nearest_crossing(target: int, radius: int) -> int | None:
+        lo = np.searchsorted(crossings, target - radius)
+        hi = np.searchsorted(crossings, target + radius, side='right')
+        if lo >= hi:
+            return None
+        region = crossings[lo:hi]
+        best_idx = np.argmin(np.abs(region - target))
+        return int(region[best_idx])
+
+    while pos < n_samples:
+        f0, conf = _f0_at(pos)
+
+        if conf < confidence_threshold or f0 < 50:
+            if not gcis or pos - gcis[-1] > crepe_hop:
+                gcis.append(pos)
+            pos += crepe_hop
+            continue
+
+        period = int(sample_rate / f0)
+        search_radius = int(period * 0.4)
+
+        if not gcis:
+            c = _find_nearest_crossing(pos, search_radius)
+            if c is not None:
+                gcis.append(c)
+                pos = c + period
+            else:
+                gcis.append(pos)
+                pos += period
+            continue
+
+        expected = gcis[-1] + period
+        c = _find_nearest_crossing(expected, search_radius)
+        if c is not None:
+            gcis.append(c)
+            pos = c + period
+        else:
+            gcis.append(expected)
+            pos = expected + period
+
+    return np.array(gcis, dtype=np.int64)
+
+
+def detect_gci_zfr(
+    samples: np.ndarray,
+    sample_rate: int = 24000,
+    trend_window_ms: float = 10.0,
+) -> np.ndarray:
+    from scipy.signal import lfilter
+
+    x = np.diff(samples.astype(np.float64), prepend=0.0)
+
+    y = np.asarray(lfilter([1.0], [1.0, -2.0, 1.0], x))
+
+    half_win = int(trend_window_ms * sample_rate / 1000.0)
+    if half_win < 1:
+        half_win = 1
+    win = 2 * half_win + 1
+
+    y = _remove_trend(y, win, half_win)
+    zfr_signal = _remove_trend(y, win, half_win)
+
+    crossings = np.where(
+        (zfr_signal[:-1] <= 0) & (zfr_signal[1:] > 0)
+    )[0] + 1
+
+    min_spacing = int(sample_rate / 500)
+    if len(crossings) > 1:
+        filtered = [crossings[0]]
+        for c in crossings[1:]:
+            if c - filtered[-1] >= min_spacing:
+                filtered.append(c)
+        crossings = np.array(filtered, dtype=np.int64)
+
+    return crossings
+
+
+def _remove_trend(y: np.ndarray, win: int, half_win: int) -> np.ndarray:
+    cumsum = np.cumsum(np.concatenate(([0.0], y)))
+    mean = (cumsum[win:] - cumsum[:-win]) / win
+    trend = np.concatenate((
+        np.full(half_win, mean[0]),
+        mean,
+        np.full(len(y) - half_win - len(mean), mean[-1]),
+    ))
+    return y - trend
 
 
 def _lpc_residual(samples: np.ndarray, order: int, sample_rate: int) -> np.ndarray:
@@ -78,7 +190,7 @@ def _levinson_durbin(r: np.ndarray, order: int) -> np.ndarray:
     return a
 
 
-def _find_gcis(
+def _find_gcis_lp(
     residual: np.ndarray,
     samples: np.ndarray,
     pitch: np.ndarray,

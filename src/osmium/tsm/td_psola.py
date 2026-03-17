@@ -119,7 +119,7 @@ def td_psola_stretch(
             continue
 
         output[dst_start:dst_end] += frame
-        window_sum[dst_start:dst_end] += window ** 2
+        window_sum[dst_start:dst_end] += window
 
     nonzero = window_sum > 1e-8
     output[nonzero] /= window_sum[nonzero]
@@ -216,7 +216,7 @@ def td_psola_variable_rate(
             continue
 
         output[dst_start:dst_end] += frame
-        window_sum[dst_start:dst_end] += window ** 2
+        window_sum[dst_start:dst_end] += window
 
     nonzero = window_sum > 1e-8
     output[nonzero] /= window_sum[nonzero]
