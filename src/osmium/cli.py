@@ -120,18 +120,32 @@ def _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothin
             smoothing=smoothing, on_progress=on_progress,
         )
     else:
-        from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
-
-        if rate_curve is not None:
-            output_samples = vocos_variable_rate(
-                audio.samples, rate_curve, rate_times,
-                sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-            )
-        else:
-            output_samples = vocos_stretch(
-                audio.samples, speed,
-                sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-            )
+        try:
+            from osmium.tsm.vocos_mlx import vocos_mlx_stretch, vocos_mlx_variable_rate
+            click.echo("  stretching (vocos via mlx)...", err=True)
+            if rate_curve is not None:
+                output_samples = vocos_mlx_variable_rate(
+                    audio.samples, rate_curve, rate_times,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
+            else:
+                output_samples = vocos_mlx_stretch(
+                    audio.samples, speed,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
+        except (ImportError, Exception):
+            from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
+            click.echo("  stretching (vocos via pytorch)...", err=True)
+            if rate_curve is not None:
+                output_samples = vocos_variable_rate(
+                    audio.samples, rate_curve, rate_times,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
+            else:
+                output_samples = vocos_stretch(
+                    audio.samples, speed,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
 
     input_rms = np.sqrt(np.mean(audio.samples ** 2))
     output_samples = _soft_clip_and_normalize(output_samples, input_rms)
