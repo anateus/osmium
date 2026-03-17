@@ -51,6 +51,13 @@ def _process_chunk(args: tuple) -> tuple[int, np.ndarray]:
             output = variable_rate_psola(chunk_data, rate_curve, rate_times, sample_rate)
         else:
             output = psola_stretch(chunk_data, speed, sample_rate)
+    elif engine == "hybrid":
+        from osmium.tsm.voiced_split import hybrid_voiced_stretch, hybrid_voiced_variable_rate
+        if rate_info is not None:
+            rate_curve, rate_times = rate_info
+            output = hybrid_voiced_variable_rate(chunk_data, rate_curve, rate_times, window_size, sample_rate)
+        else:
+            output = hybrid_voiced_stretch(chunk_data, speed, window_size, sample_rate)
     elif engine == "phase_vocoder":
         from osmium.tsm.phase_vocoder import phase_vocoder_stretch, variable_rate_phase_vocoder
         if rate_info is not None:
