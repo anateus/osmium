@@ -15,11 +15,12 @@ from osmium.io.encode import encode, encode_pcm_stdout
 @click.option("-o", "--output", "output_file", type=click.Path(), help="Output file path")
 @click.option("--stream", is_flag=True, help="Stream raw f32le PCM to stdout")
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
-@click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate")
+@click.option("--uniform", is_flag=True, help="Skip importance analysis, use uniform-rate")
+@click.option("--mimi", is_flag=True, help="Use Mimi neural codec for importance (slower, slightly better)")
 @click.option("--smoothing", default=0.7, type=float, help="Mel temporal smoothing sigma (0=off)")
 @click.option("--chunks", "chunk_duration", type=float, default=0, help="Chunk duration in seconds for long files (0=auto for >10min)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, no_model, smoothing, chunk_duration, analyze_only):
+def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -30,10 +31,10 @@ def main(input_file, speed, output_file, stream, resolution, no_model, smoothing
     if stream:
         _stream_mode(input_file, speed)
     else:
-        _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing, analyze_only, chunk_duration)
+        _batch_mode(input_file, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration)
 
 
-def _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing, analyze_only, chunk_duration):
+def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration):
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
@@ -74,53 +75,21 @@ def _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing,
         rate_curve = None
         rate_times = None
 
-        if not no_model:
-            analyze_task = progress.add_task("Analyzing", total=None, status="loading mimi...")
+        if not uniform:
+            from osmium.analyzer.importance import resample_importance
+            from osmium.tsm.rate_schedule import importance_to_rate_schedule
 
-            try:
-                from osmium.analyzer.importance import compute_importance, resample_importance
-            except ImportError:
-                console.print("[red]Neural analysis requires:[/red] uv pip install -e '.[neural]'")
-                console.print("Or use --no-model for uniform-rate mode.")
-                raise SystemExit(1)
+            if use_mimi:
+                imp = _analyze_mimi(audio, progress, console)
+            else:
+                imp = _analyze_mel(audio, progress)
 
-            t1 = time.time()
-            try:
-                from osmium.analyzer.mimi_mlx import encode_mlx
-                progress.update(analyze_task, status="mimi (mlx)")
-                codes = encode_mlx(audio.samples, audio.sample_rate)
-            except (ImportError, Exception):
-                from osmium.analyzer.mimi import encode as mimi_encode
-                progress.update(analyze_task, status="mimi (cpu)")
-                codes = mimi_encode(audio.samples, audio.sample_rate)
-
-            analyze_time = time.time() - t1
-            progress.update(analyze_task, status=f"{duration/analyze_time:.0f}x realtime")
-
-            imp = compute_importance(codes, audio.samples, audio.sample_rate)
             imp = resample_importance(imp, resolution_s)
 
-            progress.remove_task(analyze_task)
-
             if analyze_only:
-                result = {
-                    "duration": duration,
-                    "frame_rate": imp.frame_rate,
-                    "resolution_s": resolution_s,
-                    "n_frames": len(imp.scores),
-                    "scores": imp.scores.tolist(),
-                    "times": imp.times.tolist(),
-                }
-                out = output_file or "-"
-                if out == "-":
-                    json.dump(result, sys.stdout, indent=2)
-                else:
-                    with open(out, "w") as f:
-                        json.dump(result, f, indent=2)
-                    console.print(f"  wrote importance map to {out}")
+                _write_analysis(imp, resolution_s, duration, output_file, console)
                 return
 
-            from osmium.tsm.rate_schedule import importance_to_rate_schedule
             rate_curve, rate_times = importance_to_rate_schedule(
                 imp.scores, imp.times, target_speed=speed,
             )
@@ -136,17 +105,14 @@ def _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing,
             def on_chunk_progress(done, total):
                 progress.update(stretch_task, completed=done, status=f"{done}/{total} chunks")
 
-            t_stretch = time.time()
             output_samples = process_chunked(
                 audio.samples, speed=speed, sample_rate=audio.sample_rate,
                 chunk_duration=chunk_dur,
                 rate_curve=rate_curve, rate_times=rate_times,
                 smoothing=smoothing, on_progress=on_chunk_progress,
             )
-            stretch_time = time.time() - t_stretch
         else:
             stretch_task = progress.add_task("Stretching", total=None, status="vocos")
-            t_stretch = time.time()
 
             try:
                 from osmium.tsm.vocos_mlx import vocos_mlx_stretch, vocos_mlx_variable_rate
@@ -175,8 +141,6 @@ def _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing,
                         sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
                     )
 
-            stretch_time = time.time() - t_stretch
-
         progress.remove_task(stretch_task)
 
         input_rms = np.sqrt(np.mean(audio.samples ** 2))
@@ -196,6 +160,59 @@ def _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing,
     )
     if output_file:
         console.print(f"  [dim]→ {output_file}[/dim]")
+
+
+def _analyze_mel(audio, progress):
+    from osmium.tsm.vocos_mlx import extract_mel
+    from osmium.analyzer.mel_importance import compute_mel_importance
+
+    task = progress.add_task("Analyzing", total=None, status="mel importance")
+    duration = len(audio.samples) / audio.sample_rate
+    mel = extract_mel(audio.samples, audio.sample_rate)
+    imp = compute_mel_importance(mel, duration)
+    progress.remove_task(task)
+    return imp
+
+
+def _analyze_mimi(audio, progress, console):
+    from osmium.analyzer.importance import compute_importance
+
+    task = progress.add_task("Analyzing", total=None, status="loading mimi...")
+
+    try:
+        from osmium.analyzer.mimi_mlx import encode_mlx
+        progress.update(task, status="mimi (mlx)")
+        codes = encode_mlx(audio.samples, audio.sample_rate)
+    except (ImportError, Exception):
+        try:
+            from osmium.analyzer.mimi import encode as mimi_encode
+            progress.update(task, status="mimi (cpu)")
+            codes = mimi_encode(audio.samples, audio.sample_rate)
+        except ImportError:
+            console.print("[red]Mimi requires:[/red] uv pip install -e '.[neural]'")
+            raise SystemExit(1)
+
+    imp = compute_importance(codes, audio.samples, audio.sample_rate)
+    progress.remove_task(task)
+    return imp
+
+
+def _write_analysis(imp, resolution_s, duration, output_file, console):
+    result = {
+        "duration": duration,
+        "frame_rate": imp.frame_rate,
+        "resolution_s": resolution_s,
+        "n_frames": len(imp.scores),
+        "scores": imp.scores.tolist(),
+        "times": imp.times.tolist(),
+    }
+    out = output_file or "-"
+    if out == "-":
+        json.dump(result, sys.stdout, indent=2)
+    else:
+        with open(out, "w") as f:
+            json.dump(result, f, indent=2)
+        console.print(f"  wrote importance map to {out}")
 
 
 def _stream_mode(input_file, speed):
