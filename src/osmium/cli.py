@@ -22,10 +22,10 @@ from osmium.tsm.stream import process_streaming
 @click.option("--window", "window_size", default=2048, type=int, help="STFT window size")
 @click.option("--device", default="auto", type=click.Choice(["auto", "mlx", "cuda", "cpu"]), help="Compute device")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate TSM")
-@click.option("--no-hpss", is_flag=True, help="Disable HPSS, use phase vocoder only")
+@click.option("--hpss", is_flag=True, help="Enable HPSS harmonic/percussive separation (experimental)")
 @click.option("--phoneme", is_flag=True, help="Enable phoneme alignment for importance (requires torch)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, window_size, device, no_model, no_hpss, phoneme, analyze_only):
+def main(input_file, speed, output_file, stream, resolution, window_size, device, no_model, hpss, phoneme, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -40,10 +40,10 @@ def main(input_file, speed, output_file, stream, resolution, window_size, device
     if stream:
         _stream_mode(input_file, speed, window_size)
     else:
-        _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, phoneme, resolution_s, analyze_only)
+        _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only)
 
 
-def _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, phoneme, resolution_s, analyze_only):
+def _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only):
     t0 = time.time()
     click.echo("  decoding...", err=True)
     audio = decode(input_file)
@@ -53,14 +53,14 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, 
 
     if no_model:
         t1 = time.time()
-        mode = "HPSS hybrid" if not no_hpss else "phase vocoder"
+        mode = "HPSS hybrid" if hpss else "phase vocoder"
         click.echo(f"  uniform-rate {mode} @ {speed}x...", err=True)
-        if no_hpss:
-            output_samples = phase_vocoder_stretch(
+        if hpss:
+            output_samples = hybrid_stretch(
                 audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
             )
         else:
-            output_samples = hybrid_stretch(
+            output_samples = phase_vocoder_stretch(
                 audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
             )
     else:
@@ -114,16 +114,16 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, 
         )
         click.echo(f"  rate range: {rate_curve.min():.1f}x – {rate_curve.max():.1f}x", err=True)
 
-        mode = "HPSS hybrid" if not no_hpss else "phase vocoder"
+        mode = "HPSS hybrid" if hpss else "phase vocoder"
         click.echo(f"  variable-rate {mode} @ {speed}x...", err=True)
-        if no_hpss:
-            from osmium.tsm.phase_vocoder import variable_rate_phase_vocoder
-            output_samples = variable_rate_phase_vocoder(
+        if hpss:
+            output_samples = hybrid_variable_rate_stretch(
                 audio.samples, rate_curve, rate_times,
                 window_size=window_size, sample_rate=audio.sample_rate,
             )
         else:
-            output_samples = hybrid_variable_rate_stretch(
+            from osmium.tsm.phase_vocoder import variable_rate_phase_vocoder
+            output_samples = variable_rate_phase_vocoder(
                 audio.samples, rate_curve, rate_times,
                 window_size=window_size, sample_rate=audio.sample_rate,
             )
