@@ -74,8 +74,13 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, pho
             )
 
         t1 = time.time()
-        click.echo("  analyzing (mimi)...", err=True)
-        codes = mimi_encode(audio.samples, audio.sample_rate)
+        try:
+            from osmium.analyzer.mimi_mlx import encode_mlx
+            click.echo("  analyzing (mimi via mlx)...", err=True)
+            codes = encode_mlx(audio.samples, audio.sample_rate)
+        except (ImportError, Exception):
+            click.echo("  analyzing (mimi via rustymimi)...", err=True)
+            codes = mimi_encode(audio.samples, audio.sample_rate)
         analyze_time = time.time() - t1
         click.echo(f"  analyzed in {analyze_time:.1f}s ({duration/analyze_time:.1f}x realtime)", err=True)
 
