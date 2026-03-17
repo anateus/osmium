@@ -27,7 +27,7 @@ def crepe_hybrid_stretch(
     )
 
     output_parts = []
-    crossfade = int(0.005 * sample_rate)
+    crossfade = int(0.02 * sample_rate)
 
     for seg_start, seg_end, is_voiced in segments:
         chunk = samples[seg_start:seg_end]
@@ -37,6 +37,7 @@ def crepe_hybrid_stretch(
             marks = pitch_to_marks(
                 chunk_pitch.pitch, chunk_pitch.confidence,
                 sample_rate, hop_samples, confidence_threshold,
+                samples=chunk,
             )
             if len(marks) > 2:
                 stretched = td_psola_stretch(chunk, marks, speed, sample_rate)
@@ -71,7 +72,7 @@ def crepe_hybrid_variable_rate(
     )
 
     output_parts = []
-    crossfade = int(0.005 * sample_rate)
+    crossfade = int(0.02 * sample_rate)
 
     for seg_start, seg_end, is_voiced in segments:
         chunk = samples[seg_start:seg_end]
@@ -83,6 +84,7 @@ def crepe_hybrid_variable_rate(
             marks = pitch_to_marks(
                 chunk_pitch.pitch, chunk_pitch.confidence,
                 sample_rate, hop_samples, confidence_threshold,
+                samples=chunk,
             )
             if len(marks) > 2:
                 seg_start_time = seg_start / sample_rate

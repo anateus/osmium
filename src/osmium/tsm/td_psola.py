@@ -1,12 +1,22 @@
 import numpy as np
 
 
+def _snap_to_zero_crossing(samples: np.ndarray, pos: int, search_range: int = 50) -> int:
+    lo = max(1, pos - search_range)
+    hi = min(len(samples) - 1, pos + search_range)
+    for j in range(lo, hi):
+        if samples[j - 1] <= 0 < samples[j]:
+            return j
+    return pos
+
+
 def pitch_to_marks(
     pitch: np.ndarray,
     confidence: np.ndarray,
     sample_rate: int = 24000,
     hop_size: int = 240,
     confidence_threshold: float = 0.5,
+    samples: np.ndarray | None = None,
 ) -> np.ndarray:
     marks = []
     pos = 0.0
@@ -33,6 +43,9 @@ def pitch_to_marks(
 
         while pos < frame_end:
             mark = int(round(pos))
+            if samples is not None:
+                search = int(period * 0.25)
+                mark = _snap_to_zero_crossing(samples, mark, search)
             if mark >= 0 and (not marks or mark > marks[-1]):
                 marks.append(mark)
             pos += period
@@ -57,39 +70,47 @@ def td_psola_stretch(
     output = np.zeros(output_length, dtype=np.float64)
     window_sum = np.zeros(output_length, dtype=np.float64)
 
-    synthesis_marks = (pitch_marks / speed).astype(np.int64)
+    synthesis_marks = (pitch_marks.astype(np.float64) / speed).astype(np.int64)
     synthesis_marks = synthesis_marks[synthesis_marks < output_length]
-
     n_use = min(len(pitch_marks), len(synthesis_marks))
 
     for i in range(n_use):
-        am = pitch_marks[i]
-        sm = synthesis_marks[i]
+        am = int(pitch_marks[i])
+        sm = int(synthesis_marks[i])
 
-        if i > 0:
-            half_left = am - pitch_marks[i - 1]
-        else:
-            half_left = pitch_marks[1] - pitch_marks[0] if len(pitch_marks) > 1 else 512
-        if i < n_use - 1:
-            half_right = pitch_marks[i + 1] - am
-        else:
-            half_right = half_left
+        a_half_left = am - int(pitch_marks[i - 1]) if i > 0 else (int(pitch_marks[1]) - int(pitch_marks[0]) if len(pitch_marks) > 1 else 480)
+        a_half_right = int(pitch_marks[i + 1]) - am if i < n_use - 1 else a_half_left
 
-        win_size = half_left + half_right
-        if win_size < 4:
+        s_half_left = sm - int(synthesis_marks[i - 1]) if i > 0 else (int(synthesis_marks[1]) - int(synthesis_marks[0]) if n_use > 1 else 480)
+        s_half_right = int(synthesis_marks[i + 1]) - sm if i < n_use - 1 else s_half_left
+
+        win_half = max(a_half_left, a_half_right)
+        if win_half < 2:
             continue
 
-        src_start = am - half_left
-        src_end = am + half_right
+        src_start = am - win_half
+        src_end = am + win_half
         if src_start < 0 or src_end > len(samples):
             continue
 
+        win_size = 2 * win_half
         window = np.hanning(win_size).astype(np.float64)
         frame = samples[src_start:src_end] * window
 
-        dst_start = sm - half_left
-        dst_end = sm + half_right
-        if dst_start < 0 or dst_end > output_length:
+        dst_start = sm - win_half
+        dst_end = sm + win_half
+        if dst_start < 0:
+            trim = -dst_start
+            frame = frame[trim:]
+            window = window[trim:]
+            dst_start = 0
+        if dst_end > output_length:
+            trim = dst_end - output_length
+            frame = frame[:len(frame) - trim]
+            window = window[:len(window) - trim]
+            dst_end = output_length
+
+        if len(frame) == 0:
             continue
 
         output[dst_start:dst_end] += frame
@@ -97,6 +118,18 @@ def td_psola_stretch(
 
     nonzero = window_sum > 1e-8
     output[nonzero] /= window_sum[nonzero]
+
+    low_energy = ~nonzero
+    if low_energy.any():
+        from scipy.ndimage import binary_dilation
+        dilated = binary_dilation(nonzero, iterations=48)
+        fill_mask = dilated & low_energy
+        if fill_mask.any():
+            indices = np.arange(output_length)
+            valid_idx = indices[nonzero]
+            valid_vals = output[nonzero]
+            if len(valid_idx) > 0:
+                output[fill_mask] = np.interp(indices[fill_mask], valid_idx, valid_vals)
 
     return output.astype(np.float32)
 
@@ -132,34 +165,41 @@ def td_psola_variable_rate(
     output = np.zeros(output_length, dtype=np.float64)
     window_sum = np.zeros(output_length, dtype=np.float64)
 
-    for i in range(len(pitch_marks)):
-        am = pitch_marks[i]
-        sm = synthesis_marks[i]
+    n_use = len(pitch_marks)
+    for i in range(n_use):
+        am = int(pitch_marks[i])
+        sm = int(synthesis_marks[i])
 
-        if i > 0:
-            half_left = am - pitch_marks[i - 1]
-        else:
-            half_left = pitch_marks[1] - pitch_marks[0] if len(pitch_marks) > 1 else 512
-        if i < len(pitch_marks) - 1:
-            half_right = pitch_marks[i + 1] - am
-        else:
-            half_right = half_left
+        a_half_left = am - int(pitch_marks[i - 1]) if i > 0 else (int(pitch_marks[1]) - int(pitch_marks[0]) if n_use > 1 else 480)
+        a_half_right = int(pitch_marks[i + 1]) - am if i < n_use - 1 else a_half_left
 
-        win_size = half_left + half_right
-        if win_size < 4:
+        win_half = max(a_half_left, a_half_right)
+        if win_half < 2:
             continue
 
-        src_start = am - half_left
-        src_end = am + half_right
+        src_start = am - win_half
+        src_end = am + win_half
         if src_start < 0 or src_end > len(samples):
             continue
 
+        win_size = 2 * win_half
         window = np.hanning(win_size).astype(np.float64)
         frame = samples[src_start:src_end] * window
 
-        dst_start = sm - half_left
-        dst_end = sm + half_right
-        if dst_start < 0 or dst_end > output_length:
+        dst_start = sm - win_half
+        dst_end = sm + win_half
+        if dst_start < 0:
+            trim = -dst_start
+            frame = frame[trim:]
+            window = window[trim:]
+            dst_start = 0
+        if dst_end > output_length:
+            trim = dst_end - output_length
+            frame = frame[:len(frame) - trim]
+            window = window[:len(window) - trim]
+            dst_end = output_length
+
+        if len(frame) == 0:
             continue
 
         output[dst_start:dst_end] += frame
@@ -167,6 +207,18 @@ def td_psola_variable_rate(
 
     nonzero = window_sum > 1e-8
     output[nonzero] /= window_sum[nonzero]
+
+    low_energy = ~nonzero
+    if low_energy.any():
+        from scipy.ndimage import binary_dilation
+        dilated = binary_dilation(nonzero, iterations=48)
+        fill_mask = dilated & low_energy
+        if fill_mask.any():
+            indices = np.arange(output_length)
+            valid_idx = indices[nonzero]
+            valid_vals = output[nonzero]
+            if len(valid_idx) > 0:
+                output[fill_mask] = np.interp(indices[fill_mask], valid_idx, valid_vals)
 
     used = np.max(np.where(nonzero)[0]) + 1 if nonzero.any() else 0
     return output[:used].astype(np.float32)
