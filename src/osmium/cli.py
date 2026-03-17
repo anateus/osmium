@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import time
 import click
@@ -7,9 +8,6 @@ from pathlib import Path
 
 from osmium.io.decode import decode, decode_streaming
 from osmium.io.encode import encode, encode_pcm_stdout
-from osmium.tsm.hybrid import hybrid_stretch, hybrid_variable_rate_stretch
-from osmium.tsm.phase_vocoder import phase_vocoder_stretch
-from osmium.tsm.rate_schedule import importance_to_rate_schedule
 from osmium.tsm.stream import process_streaming
 
 
@@ -18,14 +16,16 @@ from osmium.tsm.stream import process_streaming
 @click.option("-s", "--speed", required=True, type=float, help="Target speed factor (e.g., 2.0, 3.5)")
 @click.option("-o", "--output", "output_file", type=click.Path(), help="Output file path")
 @click.option("--stream", is_flag=True, help="Stream raw f32le PCM to stdout")
+@click.option("--engine", default="phase_vocoder", type=click.Choice(["phase_vocoder", "psola"]), help="TSM engine")
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
 @click.option("--window", "window_size", default=2048, type=int, help="STFT window size")
-@click.option("--device", default="auto", type=click.Choice(["auto", "mlx", "cuda", "cpu"]), help="Compute device")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate TSM")
-@click.option("--hpss", is_flag=True, help="Enable HPSS harmonic/percussive separation (experimental)")
+@click.option("--hpss", is_flag=True, help="Enable HPSS (experimental, phase_vocoder engine only)")
 @click.option("--phoneme", is_flag=True, help="Enable phoneme alignment for importance (requires torch)")
+@click.option("--parallel", "parallel_chunks", type=float, default=0, help="Chunk duration in seconds for parallel processing (0=auto)")
+@click.option("--workers", type=int, default=0, help="Number of parallel workers (0=auto)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, window_size, device, no_model, hpss, phoneme, analyze_only):
+def main(input_file, speed, output_file, stream, engine, resolution, window_size, no_model, hpss, phoneme, parallel_chunks, workers, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -35,15 +35,15 @@ def main(input_file, speed, output_file, stream, resolution, window_size, device
 
     resolution_s = _parse_resolution(resolution)
 
-    click.echo(f"osmium: {Path(input_file).name} @ {speed}x", err=True)
+    click.echo(f"osmium: {Path(input_file).name} @ {speed}x (engine={engine})", err=True)
 
     if stream:
         _stream_mode(input_file, speed, window_size)
     else:
-        _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only)
+        _batch_mode(input_file, speed, engine, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only, parallel_chunks, workers)
 
 
-def _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only):
+def _batch_mode(input_file, speed, engine, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only, parallel_chunks, workers):
     t0 = time.time()
     click.echo("  decoding...", err=True)
     audio = decode(input_file)
@@ -51,18 +51,15 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, pho
     duration = len(audio.samples) / audio.sample_rate
     click.echo(f"  decoded {duration:.1f}s ({len(audio.samples)} samples) in {decode_time:.1f}s", err=True)
 
+    use_parallel = parallel_chunks > 0 or duration > 600
+    chunk_dur = parallel_chunks if parallel_chunks > 0 else 3600.0
+    max_workers = workers if workers > 0 else min(os.cpu_count() or 1, max(1, int(duration / chunk_dur)))
+
+    rate_curve = None
+    rate_times = None
+
     if no_model:
         t1 = time.time()
-        mode = "HPSS hybrid" if hpss else "phase vocoder"
-        click.echo(f"  uniform-rate {mode} @ {speed}x...", err=True)
-        if hpss:
-            output_samples = hybrid_stretch(
-                audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
-            )
-        else:
-            output_samples = phase_vocoder_stretch(
-                audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
-            )
     else:
         try:
             from osmium.analyzer.mimi import encode as mimi_encode
@@ -114,24 +111,31 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, pho
                 click.echo(f"  wrote importance map to {out}", err=True)
             return
 
+        from osmium.tsm.rate_schedule import importance_to_rate_schedule
         rate_curve, rate_times = importance_to_rate_schedule(
             imp.scores, imp.times, target_speed=speed,
         )
         click.echo(f"  rate range: {rate_curve.min():.1f}x – {rate_curve.max():.1f}x", err=True)
 
-        mode = "HPSS hybrid" if hpss else "phase vocoder"
-        click.echo(f"  variable-rate {mode} @ {speed}x...", err=True)
-        if hpss:
-            output_samples = hybrid_variable_rate_stretch(
-                audio.samples, rate_curve, rate_times,
-                window_size=window_size, sample_rate=audio.sample_rate,
-            )
-        else:
-            from osmium.tsm.phase_vocoder import variable_rate_phase_vocoder
-            output_samples = variable_rate_phase_vocoder(
-                audio.samples, rate_curve, rate_times,
-                window_size=window_size, sample_rate=audio.sample_rate,
-            )
+    if use_parallel and max_workers > 1:
+        click.echo(f"  parallel {engine} @ {speed}x ({max_workers} workers, {chunk_dur:.0f}s chunks)...", err=True)
+        from osmium.parallel import process_parallel
+
+        def on_progress(done, total):
+            click.echo(f"    chunk {done}/{total} complete", err=True)
+
+        output_samples = process_parallel(
+            audio.samples, speed=speed, engine=engine,
+            window_size=window_size, sample_rate=audio.sample_rate,
+            chunk_duration=chunk_dur, max_workers=max_workers,
+            rate_curve=rate_curve, rate_times=rate_times,
+            on_progress=on_progress,
+        )
+    else:
+        output_samples = _stretch_single(
+            audio.samples, speed, engine, window_size, audio.sample_rate,
+            hpss, rate_curve, rate_times,
+        )
 
     input_rms = np.sqrt(np.mean(audio.samples ** 2))
     output_samples = _soft_clip_and_normalize(output_samples, input_rms)
@@ -146,6 +150,25 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, hpss, pho
         encode(output_samples, audio.sample_rate, output_file)
         encode_time = time.time() - t2
         click.echo(f"  done in {encode_time:.1f}s (total: {time.time() - t0:.1f}s)", err=True)
+
+
+def _stretch_single(samples, speed, engine, window_size, sample_rate, hpss, rate_curve, rate_times):
+    if engine == "psola":
+        from osmium.tsm.psola_engine import psola_stretch, variable_rate_psola
+        if rate_curve is not None:
+            return variable_rate_psola(samples, rate_curve, rate_times, sample_rate)
+        return psola_stretch(samples, speed, sample_rate)
+
+    if hpss:
+        from osmium.tsm.hybrid import hybrid_stretch, hybrid_variable_rate_stretch
+        if rate_curve is not None:
+            return hybrid_variable_rate_stretch(samples, rate_curve, rate_times, window_size, sample_rate)
+        return hybrid_stretch(samples, speed, window_size, sample_rate)
+
+    from osmium.tsm.phase_vocoder import phase_vocoder_stretch, variable_rate_phase_vocoder
+    if rate_curve is not None:
+        return variable_rate_phase_vocoder(samples, rate_curve, rate_times, window_size, sample_rate)
+    return phase_vocoder_stretch(samples, speed, window_size, sample_rate)
 
 
 def _stream_mode(input_file, speed, window_size):

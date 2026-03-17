@@ -18,6 +18,9 @@ neural = [
 phoneme = [
     "torchaudio>=2.0",
 ]
+psola = [
+    "psola>=0.0.1",
+]
 
 [project.scripts]
 osmium = "osmium.cli:main"
