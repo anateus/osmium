@@ -1,6 +1,6 @@
 import numpy as np
-from osmium.analyzer.crepe_mlx import predict as crepe_predict
-from osmium.tsm.td_psola import pitch_to_marks, td_psola_stretch, td_psola_variable_rate
+from osmium.analyzer.gci import detect_gci
+from osmium.tsm.td_psola import td_psola_stretch, td_psola_variable_rate
 from osmium.tsm.phase_vocoder import phase_vocoder_stretch
 
 
@@ -11,18 +11,15 @@ def crepe_hybrid_stretch(
     sample_rate: int = 24000,
     confidence_threshold: float = 0.5,
 ) -> np.ndarray:
-    pitch_result = crepe_predict(samples, sample_rate, capacity="tiny")
+    gcis, pitch_result = detect_gci(samples, sample_rate, confidence_threshold=confidence_threshold)
 
     voiced = pitch_result.confidence > confidence_threshold
-    voiced_ratio = voiced.mean()
-
-    if voiced_ratio < 0.05:
+    if voiced.mean() < 0.05:
         return phase_vocoder_stretch(samples, speed, window_size, sample_rate)
 
-    hop_samples = int(sample_rate * 0.01)
     segments = _segment_by_voicing(
         pitch_result.confidence, confidence_threshold,
-        hop_samples, len(samples), sample_rate,
+        int(sample_rate * 0.01), len(samples), sample_rate,
         min_segment_ms=80.0,
     )
 
@@ -33,14 +30,9 @@ def crepe_hybrid_stretch(
         chunk = samples[seg_start:seg_end]
 
         if is_voiced and len(chunk) > int(0.05 * sample_rate):
-            chunk_pitch = crepe_predict(chunk, sample_rate, capacity="tiny")
-            marks = pitch_to_marks(
-                chunk_pitch.pitch, chunk_pitch.confidence,
-                sample_rate, hop_samples, confidence_threshold,
-                samples=chunk,
-            )
-            if len(marks) > 2:
-                stretched = td_psola_stretch(chunk, marks, speed, sample_rate)
+            seg_gcis = gcis[(gcis >= seg_start) & (gcis < seg_end)] - seg_start
+            if len(seg_gcis) > 2:
+                stretched = td_psola_stretch(chunk, seg_gcis, speed, sample_rate)
             else:
                 stretched = phase_vocoder_stretch(chunk, speed, window_size, sample_rate)
         else:
@@ -62,12 +54,11 @@ def crepe_hybrid_variable_rate(
     sample_rate: int = 24000,
     confidence_threshold: float = 0.5,
 ) -> np.ndarray:
-    pitch_result = crepe_predict(samples, sample_rate, capacity="tiny")
+    gcis, pitch_result = detect_gci(samples, sample_rate, confidence_threshold=confidence_threshold)
 
-    hop_samples = int(sample_rate * 0.01)
     segments = _segment_by_voicing(
         pitch_result.confidence, confidence_threshold,
-        hop_samples, len(samples), sample_rate,
+        int(sample_rate * 0.01), len(samples), sample_rate,
         min_segment_ms=80.0,
     )
 
@@ -80,13 +71,8 @@ def crepe_hybrid_variable_rate(
         local_rate = float(np.interp(seg_time, rate_times, rate_curve))
 
         if is_voiced and len(chunk) > int(0.05 * sample_rate):
-            chunk_pitch = crepe_predict(chunk, sample_rate, capacity="tiny")
-            marks = pitch_to_marks(
-                chunk_pitch.pitch, chunk_pitch.confidence,
-                sample_rate, hop_samples, confidence_threshold,
-                samples=chunk,
-            )
-            if len(marks) > 2:
+            seg_gcis = gcis[(gcis >= seg_start) & (gcis < seg_end)] - seg_start
+            if len(seg_gcis) > 2:
                 seg_start_time = seg_start / sample_rate
                 seg_end_time = seg_end / sample_rate
                 mask = (rate_times >= seg_start_time) & (rate_times <= seg_end_time)
@@ -98,7 +84,7 @@ def crepe_hybrid_variable_rate(
                     local_rates = np.array([local_rate])
 
                 stretched = td_psola_variable_rate(
-                    chunk, marks, local_rates, local_times, sample_rate,
+                    chunk, seg_gcis, local_rates, local_times, sample_rate,
                 )
             else:
                 stretched = phase_vocoder_stretch(chunk, local_rate, window_size, sample_rate)

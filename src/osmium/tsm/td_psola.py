@@ -74,17 +74,22 @@ def td_psola_stretch(
     synthesis_marks = synthesis_marks[synthesis_marks < output_length]
     n_use = min(len(pitch_marks), len(synthesis_marks))
 
+    periods = np.zeros(len(pitch_marks))
+    for i in range(len(pitch_marks)):
+        if i > 0 and i < len(pitch_marks) - 1:
+            periods[i] = (pitch_marks[i + 1] - pitch_marks[i - 1]) / 2.0
+        elif i > 0:
+            periods[i] = pitch_marks[i] - pitch_marks[i - 1]
+        elif len(pitch_marks) > 1:
+            periods[i] = pitch_marks[1] - pitch_marks[0]
+        else:
+            periods[i] = 480
+
     for i in range(n_use):
         am = int(pitch_marks[i])
         sm = int(synthesis_marks[i])
 
-        a_half_left = am - int(pitch_marks[i - 1]) if i > 0 else (int(pitch_marks[1]) - int(pitch_marks[0]) if len(pitch_marks) > 1 else 480)
-        a_half_right = int(pitch_marks[i + 1]) - am if i < n_use - 1 else a_half_left
-
-        s_half_left = sm - int(synthesis_marks[i - 1]) if i > 0 else (int(synthesis_marks[1]) - int(synthesis_marks[0]) if n_use > 1 else 480)
-        s_half_right = int(synthesis_marks[i + 1]) - sm if i < n_use - 1 else s_half_left
-
-        win_half = max(a_half_left, a_half_right)
+        win_half = int(periods[i])
         if win_half < 2:
             continue
 
@@ -166,14 +171,22 @@ def td_psola_variable_rate(
     window_sum = np.zeros(output_length, dtype=np.float64)
 
     n_use = len(pitch_marks)
+    periods = np.zeros(n_use)
+    for i in range(n_use):
+        if i > 0 and i < n_use - 1:
+            periods[i] = (pitch_marks[i + 1] - pitch_marks[i - 1]) / 2.0
+        elif i > 0:
+            periods[i] = pitch_marks[i] - pitch_marks[i - 1]
+        elif n_use > 1:
+            periods[i] = pitch_marks[1] - pitch_marks[0]
+        else:
+            periods[i] = 480
+
     for i in range(n_use):
         am = int(pitch_marks[i])
         sm = int(synthesis_marks[i])
 
-        a_half_left = am - int(pitch_marks[i - 1]) if i > 0 else (int(pitch_marks[1]) - int(pitch_marks[0]) if n_use > 1 else 480)
-        a_half_right = int(pitch_marks[i + 1]) - am if i < n_use - 1 else a_half_left
-
-        win_half = max(a_half_left, a_half_right)
+        win_half = int(periods[i])
         if win_half < 2:
             continue
 
