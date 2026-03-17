@@ -104,9 +104,9 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, resolutio
             window_size=window_size, sample_rate=audio.sample_rate,
         )
 
-    peak = np.max(np.abs(output_samples))
-    if peak > 0.99:
-        output_samples = output_samples * (0.99 / peak)
+    input_rms = np.sqrt(np.mean(audio.samples ** 2))
+
+    output_samples = _soft_clip_and_normalize(output_samples, input_rms)
 
     stretch_time = time.time() - t1
     out_duration = len(output_samples) / audio.sample_rate
@@ -126,6 +126,30 @@ def _stream_mode(input_file, speed, window_size, no_model, resolution_s):
     for output_chunk in process_streaming(chunks, speed=speed, window_size=window_size):
         sys.stdout.buffer.write(encode_pcm_stdout(output_chunk))
     click.echo("  stream complete", err=True)
+
+
+def _soft_clip_and_normalize(samples: np.ndarray, target_rms: float) -> np.ndarray:
+    peak = np.max(np.abs(samples))
+    if peak > 0.8:
+        threshold = 0.8
+        above = np.abs(samples) > threshold
+        sign = np.sign(samples)
+        excess = np.abs(samples) - threshold
+        samples = np.where(
+            above,
+            sign * (threshold + np.tanh(excess / (peak - threshold + 1e-10)) * (1.0 - threshold)),
+            samples,
+        )
+
+    output_rms = np.sqrt(np.mean(samples ** 2))
+    if output_rms > 0 and target_rms > 0:
+        samples = samples * (target_rms / output_rms)
+
+    peak = np.max(np.abs(samples))
+    if peak > 0.99:
+        samples = samples * (0.99 / peak)
+
+    return samples.astype(np.float32)
 
 
 def _parse_resolution(res: str) -> float:

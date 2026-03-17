@@ -15,9 +15,9 @@ def compute_importance(
     codes: MimiCodes,
     samples: np.ndarray,
     sample_rate: int = 24000,
-    weight_transition: float = 0.35,
-    weight_energy: float = 0.30,
-    weight_multi_cb: float = 0.35,
+    weight_transition: float = 0.45,
+    weight_voice_activity: float = 0.15,
+    weight_multi_cb: float = 0.40,
 ) -> ImportanceMap:
     cb = codes.codes
     n_frames = len(cb)
@@ -34,6 +34,8 @@ def compute_importance(
     if energy_max > 0:
         frame_energy = frame_energy / energy_max
 
+    voice_activity = (frame_energy > 0.05).astype(float)
+
     multi_cb_change = np.zeros(n_frames)
     if n_frames > 1 and cb.shape[1] > 1:
         for j in range(1, n_frames):
@@ -41,7 +43,7 @@ def compute_importance(
 
     importance = (
         weight_transition * transitions
-        + weight_energy * frame_energy
+        + weight_voice_activity * voice_activity
         + weight_multi_cb * multi_cb_change
     )
 
