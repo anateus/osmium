@@ -33,6 +33,31 @@ def _peak_regions(magnitude: np.ndarray) -> np.ndarray:
     return regions
 
 
+def _spectral_flatness_per_band(
+    magnitude: np.ndarray,
+    sample_rate: int,
+    window_size: int,
+    band_edges_hz: tuple = (0, 2000, 4000, 8000, 12000),
+) -> np.ndarray:
+    freq_bins = len(magnitude)
+    flatness = np.zeros(freq_bins)
+    hz_per_bin = sample_rate / window_size
+
+    for i in range(len(band_edges_hz) - 1):
+        lo = int(band_edges_hz[i] / hz_per_bin)
+        hi = min(int(band_edges_hz[i + 1] / hz_per_bin), freq_bins)
+        if hi <= lo:
+            continue
+        band = magnitude[lo:hi]
+        band_clipped = np.maximum(band, 1e-10)
+        geo_mean = np.exp(np.mean(np.log(band_clipped)))
+        arith_mean = np.mean(band_clipped)
+        sf = geo_mean / (arith_mean + 1e-10)
+        flatness[lo:hi] = sf
+
+    return flatness
+
+
 def _identity_phase_lock(
     magnitude: np.ndarray,
     phase: np.ndarray,
@@ -40,6 +65,7 @@ def _identity_phase_lock(
     prev_synth_phase: np.ndarray,
     expected_advance: np.ndarray,
     hop_ratio: float,
+    noise_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     phase_diff = phase - prev_phase - expected_advance
     phase_diff -= 2.0 * np.pi * np.round(phase_diff / (2.0 * np.pi))
@@ -48,7 +74,13 @@ def _identity_phase_lock(
 
     regions = _peak_regions(magnitude)
     rotation = peak_phase[regions] - phase[regions]
-    return phase + rotation
+    synth_phase = phase + rotation
+
+    if noise_mask is not None:
+        random_phase = np.random.uniform(-np.pi, np.pi, len(synth_phase))
+        synth_phase = np.where(noise_mask, random_phase, synth_phase)
+
+    return synth_phase
 
 
 def _detect_transients(
@@ -109,6 +141,7 @@ def phase_vocoder_stretch(
 
     freq_bins = window_size // 2 + 1
     expected_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
+    noise_threshold = 0.65
 
     output_length = (n_frames - 1) * hop_synthesis + window_size
     output = np.zeros(output_length, dtype=np.float64)
@@ -125,6 +158,9 @@ def phase_vocoder_stretch(
         magnitude = np.abs(spectrum)
         phase = np.angle(spectrum)
 
+        flatness = _spectral_flatness_per_band(magnitude, sample_rate, window_size)
+        noise_mask = flatness > noise_threshold
+
         if transients[i]:
             synth_phase = phase.copy()
             prev_phase = None
@@ -135,6 +171,7 @@ def phase_vocoder_stretch(
             synth_phase = _identity_phase_lock(
                 magnitude, phase, prev_phase, prev_synth_phase,
                 expected_advance, hop_ratio,
+                noise_mask=noise_mask,
             )
 
         prev_phase = phase
@@ -180,6 +217,7 @@ def variable_rate_phase_vocoder(
 
     freq_bins = window_size // 2 + 1
     expected_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
+    noise_threshold = 0.65
 
     frame_rates = np.array([
         float(np.interp(i * hop_analysis / sample_rate, rate_times, rate_curve))
@@ -207,6 +245,9 @@ def variable_rate_phase_vocoder(
         magnitude = np.abs(spectrum)
         phase = np.angle(spectrum)
 
+        flatness = _spectral_flatness_per_band(magnitude, sample_rate, window_size)
+        noise_mask = flatness > noise_threshold
+
         if transients[i]:
             synth_phase = phase.copy()
             prev_phase = None
@@ -217,6 +258,7 @@ def variable_rate_phase_vocoder(
             synth_phase = _identity_phase_lock(
                 magnitude, phase, prev_phase, prev_synth_phase,
                 expected_advance, hop_ratio,
+                noise_mask=noise_mask,
             )
 
         prev_phase = phase
