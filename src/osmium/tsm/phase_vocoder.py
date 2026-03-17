@@ -5,6 +5,52 @@ def _hann_window(size: int) -> np.ndarray:
     return np.hanning(size).astype(np.float64)
 
 
+def _peak_regions(magnitude: np.ndarray) -> np.ndarray:
+    n = len(magnitude)
+    peaks = np.zeros(n, dtype=bool)
+    if n <= 1:
+        peaks[:] = True
+        return np.arange(n, dtype=np.intp)
+
+    peaks[1:-1] = (magnitude[1:-1] >= magnitude[:-2]) & (magnitude[1:-1] >= magnitude[2:])
+    peaks[0] = magnitude[0] >= magnitude[1]
+    peaks[-1] = magnitude[-1] >= magnitude[-2]
+
+    peak_indices = np.where(peaks)[0]
+    if len(peak_indices) == 0:
+        return np.zeros(n, dtype=np.intp)
+
+    all_bins = np.arange(n)
+    insert_points = np.searchsorted(peak_indices, all_bins)
+    insert_points = np.clip(insert_points, 0, len(peak_indices) - 1)
+
+    regions = peak_indices[insert_points]
+    left = np.clip(insert_points - 1, 0, len(peak_indices) - 1)
+    left_peaks = peak_indices[left]
+    use_left = np.abs(all_bins - left_peaks) < np.abs(all_bins - regions)
+    regions[use_left] = left_peaks[use_left]
+
+    return regions
+
+
+def _identity_phase_lock(
+    magnitude: np.ndarray,
+    phase: np.ndarray,
+    prev_phase: np.ndarray,
+    prev_synth_phase: np.ndarray,
+    expected_advance: np.ndarray,
+    hop_ratio: float,
+) -> np.ndarray:
+    phase_diff = phase - prev_phase - expected_advance
+    phase_diff -= 2.0 * np.pi * np.round(phase_diff / (2.0 * np.pi))
+    inst_freq = expected_advance + phase_diff
+    peak_phase = prev_synth_phase + inst_freq * hop_ratio
+
+    regions = _peak_regions(magnitude)
+    rotation = peak_phase[regions] - phase[regions]
+    return phase + rotation
+
+
 def phase_vocoder_stretch(
     samples: np.ndarray,
     speed: float,
@@ -17,21 +63,22 @@ def phase_vocoder_stretch(
         return samples.copy()
 
     hop_analysis = window_size // 4
-    hop_synthesis = int(hop_analysis / speed)
+    hop_synthesis = max(1, int(hop_analysis / speed))
+    hop_ratio = hop_synthesis / hop_analysis
 
     window = _hann_window(window_size)
     half_win = window_size // 2
 
-    samples = np.pad(samples, (half_win, half_win), mode="constant")
+    samples_padded = np.pad(samples, (half_win, half_win), mode="constant")
 
-    n_frames = 1 + (len(samples) - window_size) // hop_analysis
+    n_frames = 1 + (len(samples_padded) - window_size) // hop_analysis
     if n_frames < 2:
-        return samples[:int(len(samples) / speed)]
+        return samples[:max(1, int(len(samples) / speed))].astype(np.float32)
 
     freq_bins = window_size // 2 + 1
-    expected_phase_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
+    expected_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
 
-    output_length = int((n_frames - 1) * hop_synthesis + window_size)
+    output_length = (n_frames - 1) * hop_synthesis + window_size
     output = np.zeros(output_length, dtype=np.float64)
     window_sum = np.zeros(output_length, dtype=np.float64)
 
@@ -40,19 +87,19 @@ def phase_vocoder_stretch(
 
     for i in range(n_frames):
         start = i * hop_analysis
-        frame = samples[start:start + window_size] * window
+        frame = samples_padded[start:start + window_size] * window
 
         spectrum = np.fft.rfft(frame)
         magnitude = np.abs(spectrum)
         phase = np.angle(spectrum)
 
         if prev_phase is None:
-            synth_phase = phase
+            synth_phase = phase.copy()
         else:
-            phase_diff = phase - prev_phase - expected_phase_advance
-            phase_diff = phase_diff - 2.0 * np.pi * np.round(phase_diff / (2.0 * np.pi))
-            true_freq = expected_phase_advance + phase_diff
-            synth_phase = prev_synth_phase + true_freq * (hop_synthesis / hop_analysis)
+            synth_phase = _identity_phase_lock(
+                magnitude, phase, prev_phase, prev_synth_phase,
+                expected_advance, hop_ratio,
+            )
 
         prev_phase = phase
         prev_synth_phase = synth_phase
@@ -69,7 +116,7 @@ def phase_vocoder_stretch(
     output[nonzero] /= window_sum[nonzero]
 
     output = output[half_win:]
-    expected_len = int((len(samples) - 2 * half_win) / speed)
+    expected_len = int(len(samples) / speed)
     output = output[:expected_len]
 
     return output.astype(np.float32)
@@ -86,43 +133,44 @@ def variable_rate_phase_vocoder(
     window = _hann_window(window_size)
     half_win = window_size // 2
 
-    samples = np.pad(samples, (half_win, half_win), mode="constant")
+    samples_padded = np.pad(samples, (half_win, half_win), mode="constant")
 
-    n_frames = 1 + (len(samples) - window_size) // hop_analysis
+    n_frames = 1 + (len(samples_padded) - window_size) // hop_analysis
     if n_frames < 2:
-        avg_rate = np.mean(rate_curve)
-        return samples[:int(len(samples) / avg_rate)]
+        avg_rate = float(np.mean(rate_curve))
+        return samples[:max(1, int(len(samples) / avg_rate))].astype(np.float32)
 
     freq_bins = window_size // 2 + 1
-    expected_phase_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
+    expected_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
 
-    output_chunks = []
     prev_phase = None
     prev_synth_phase = None
     output_pos = 0
 
-    max_output = int(len(samples) / np.min(rate_curve) * 1.1)
+    safe_min = max(0.1, float(np.min(rate_curve)))
+    max_output = int(len(samples_padded) / safe_min * 1.1)
     output = np.zeros(max_output, dtype=np.float64)
     window_sum = np.zeros(max_output, dtype=np.float64)
 
     for i in range(n_frames):
         start = i * hop_analysis
         frame_time = start / sample_rate
-        local_rate = np.interp(frame_time, rate_times, rate_curve)
+        local_rate = float(np.interp(frame_time, rate_times, rate_curve))
         hop_synthesis = max(1, int(hop_analysis / local_rate))
+        hop_ratio = hop_synthesis / hop_analysis
 
-        frame = samples[start:start + window_size] * window
+        frame = samples_padded[start:start + window_size] * window
         spectrum = np.fft.rfft(frame)
         magnitude = np.abs(spectrum)
         phase = np.angle(spectrum)
 
         if prev_phase is None:
-            synth_phase = phase
+            synth_phase = phase.copy()
         else:
-            phase_diff = phase - prev_phase - expected_phase_advance
-            phase_diff = phase_diff - 2.0 * np.pi * np.round(phase_diff / (2.0 * np.pi))
-            true_freq = expected_phase_advance + phase_diff
-            synth_phase = prev_synth_phase + true_freq * (hop_synthesis / hop_analysis)
+            synth_phase = _identity_phase_lock(
+                magnitude, phase, prev_phase, prev_synth_phase,
+                expected_advance, hop_ratio,
+            )
 
         prev_phase = phase
         prev_synth_phase = synth_phase

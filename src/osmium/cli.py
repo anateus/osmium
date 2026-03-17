@@ -4,10 +4,10 @@ import click
 import numpy as np
 from pathlib import Path
 
-from osmium.io.decode import decode
+from osmium.io.decode import decode, decode_streaming
 from osmium.io.encode import encode, encode_pcm_stdout
-from osmium.tsm.phase_vocoder import phase_vocoder_stretch, variable_rate_phase_vocoder
-from osmium.tsm.rate_schedule import uniform_rate_schedule
+from osmium.tsm.phase_vocoder import phase_vocoder_stretch
+from osmium.tsm.stream import process_streaming
 
 
 @click.command()
@@ -28,10 +28,15 @@ def main(input_file, speed, output_file, stream, resolution, window_size, device
     if speed <= 0:
         raise click.UsageError("Speed must be positive")
 
-    res_ms = _parse_resolution(resolution)
-
     click.echo(f"osmium: {Path(input_file).name} @ {speed}x", err=True)
 
+    if stream:
+        _stream_mode(input_file, speed, window_size)
+    else:
+        _batch_mode(input_file, speed, window_size, output_file)
+
+
+def _batch_mode(input_file, speed, window_size, output_file):
     t0 = time.time()
     click.echo("  decoding...", err=True)
     audio = decode(input_file)
@@ -47,18 +52,28 @@ def main(input_file, speed, output_file, stream, resolution, window_size, device
         window_size=window_size,
         sample_rate=audio.sample_rate,
     )
+
+    peak = np.max(np.abs(output_samples))
+    if peak > 0.99:
+        output_samples = output_samples * (0.99 / peak)
+
     stretch_time = time.time() - t1
     out_duration = len(output_samples) / audio.sample_rate
     click.echo(f"  output: {out_duration:.1f}s in {stretch_time:.1f}s", err=True)
 
-    if stream:
-        sys.stdout.buffer.write(encode_pcm_stdout(output_samples))
-    else:
-        t2 = time.time()
-        click.echo(f"  encoding → {output_file}...", err=True)
-        encode(output_samples, audio.sample_rate, output_file)
-        encode_time = time.time() - t2
-        click.echo(f"  done in {encode_time:.1f}s (total: {time.time() - t0:.1f}s)", err=True)
+    t2 = time.time()
+    click.echo(f"  encoding → {output_file}...", err=True)
+    encode(output_samples, audio.sample_rate, output_file)
+    encode_time = time.time() - t2
+    click.echo(f"  done in {encode_time:.1f}s (total: {time.time() - t0:.1f}s)", err=True)
+
+
+def _stream_mode(input_file, speed, window_size):
+    click.echo("  streaming mode (f32le mono 24kHz)...", err=True)
+    chunks = decode_streaming(input_file, chunk_seconds=5.0)
+    for output_chunk in process_streaming(chunks, speed=speed, window_size=window_size):
+        sys.stdout.buffer.write(encode_pcm_stdout(output_chunk))
+    click.echo("  stream complete", err=True)
 
 
 def _parse_resolution(res: str) -> float:
