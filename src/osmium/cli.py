@@ -23,8 +23,9 @@ from osmium.tsm.stream import process_streaming
 @click.option("--device", default="auto", type=click.Choice(["auto", "mlx", "cuda", "cpu"]), help="Compute device")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate TSM")
 @click.option("--no-hpss", is_flag=True, help="Disable HPSS, use phase vocoder only")
+@click.option("--phoneme", is_flag=True, help="Enable phoneme alignment for importance (requires torch)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, window_size, device, no_model, no_hpss, analyze_only):
+def main(input_file, speed, output_file, stream, resolution, window_size, device, no_model, no_hpss, phoneme, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -39,10 +40,10 @@ def main(input_file, speed, output_file, stream, resolution, window_size, device
     if stream:
         _stream_mode(input_file, speed, window_size)
     else:
-        _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, resolution_s, analyze_only)
+        _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, phoneme, resolution_s, analyze_only)
 
 
-def _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, resolution_s, analyze_only):
+def _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, phoneme, resolution_s, analyze_only):
     t0 = time.time()
     click.echo("  decoding...", err=True)
     audio = decode(input_file)
@@ -78,7 +79,14 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, 
         analyze_time = time.time() - t1
         click.echo(f"  analyzed in {analyze_time:.1f}s ({duration/analyze_time:.1f}x realtime)", err=True)
 
-        imp = compute_importance(codes, audio.samples, audio.sample_rate)
+        if phoneme:
+            click.echo("  analyzing (phoneme alignment)...", err=True)
+            t_ph = time.time()
+
+        imp = compute_importance(codes, audio.samples, audio.sample_rate, use_phoneme_alignment=phoneme)
+
+        if phoneme:
+            click.echo(f"  phoneme analysis in {time.time() - t_ph:.1f}s", err=True)
         imp = resample_importance(imp, resolution_s)
 
         click.echo(f"  importance: mean={imp.scores.mean():.2f}, low(<0.2)={100*(imp.scores < 0.2).mean():.0f}%, high(>0.5)={100*(imp.scores > 0.5).mean():.0f}%", err=True)

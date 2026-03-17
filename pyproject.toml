@@ -15,6 +15,9 @@ neural = [
     "moshi_mlx>=0.3.0",
     "huggingface_hub>=0.28",
 ]
+phoneme = [
+    "torchaudio>=2.0",
+]
 
 [project.scripts]
 osmium = "osmium.cli:main"
