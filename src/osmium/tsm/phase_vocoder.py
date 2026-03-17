@@ -51,6 +51,36 @@ def _identity_phase_lock(
     return phase + rotation
 
 
+def _detect_transients(
+    samples: np.ndarray,
+    window_size: int,
+    hop: int,
+    threshold: float = 1.5,
+) -> np.ndarray:
+    n_frames = 1 + (len(samples) - window_size) // hop
+    flux = np.zeros(n_frames)
+
+    prev_mag = None
+    for i in range(n_frames):
+        start = i * hop
+        frame = samples[start:start + window_size]
+        spectrum = np.fft.rfft(frame)
+        mag = np.abs(spectrum)
+
+        if prev_mag is not None:
+            diff = mag - prev_mag
+            flux[i] = np.sum(np.maximum(0, diff)) / (np.sum(mag) + 1e-10)
+
+        prev_mag = mag
+
+    if flux.std() > 0:
+        flux_norm = (flux - flux.mean()) / (flux.std() + 1e-10)
+    else:
+        flux_norm = flux
+
+    return flux_norm > threshold
+
+
 def phase_vocoder_stretch(
     samples: np.ndarray,
     speed: float,
@@ -75,6 +105,8 @@ def phase_vocoder_stretch(
     if n_frames < 2:
         return samples[:max(1, int(len(samples) / speed))].astype(np.float32)
 
+    transients = _detect_transients(samples_padded, window_size, hop_analysis)
+
     freq_bins = window_size // 2 + 1
     expected_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
 
@@ -93,7 +125,11 @@ def phase_vocoder_stretch(
         magnitude = np.abs(spectrum)
         phase = np.angle(spectrum)
 
-        if prev_phase is None:
+        if transients[i]:
+            synth_phase = phase.copy()
+            prev_phase = None
+            prev_synth_phase = None
+        elif prev_phase is None:
             synth_phase = phase.copy()
         else:
             synth_phase = _identity_phase_lock(
@@ -140,6 +176,8 @@ def variable_rate_phase_vocoder(
         avg_rate = float(np.mean(rate_curve))
         return samples[:max(1, int(len(samples) / avg_rate))].astype(np.float32)
 
+    transients = _detect_transients(samples_padded, window_size, hop_analysis)
+
     freq_bins = window_size // 2 + 1
     expected_advance = 2.0 * np.pi * hop_analysis * np.arange(freq_bins) / window_size
 
@@ -169,7 +207,11 @@ def variable_rate_phase_vocoder(
         magnitude = np.abs(spectrum)
         phase = np.angle(spectrum)
 
-        if prev_phase is None:
+        if transients[i]:
+            synth_phase = phase.copy()
+            prev_phase = None
+            prev_synth_phase = None
+        elif prev_phase is None:
             synth_phase = phase.copy()
         else:
             synth_phase = _identity_phase_lock(
