@@ -103,21 +103,38 @@ def _load_weights_filtered(model, weights_path):
     model.filter_and_map(_filter_fn)
 
 
-def encode_mlx(samples: np.ndarray, sample_rate: int = 24000) -> MimiCodes:
+def encode_mlx(samples: np.ndarray, sample_rate: int = 24000, max_chunk_s: float = 600.0) -> MimiCodes:
     import mlx.core as mx
 
     model = _load_model()
-
-    pcm = mx.array(samples.reshape(1, 1, -1))
-
-    codes = model.encode(pcm)
-    mx.eval(codes)
-
-    codes_np = np.array(codes)
-    if codes_np.ndim == 3:
-        codes_np = codes_np.squeeze(0).T
-
     duration = len(samples) / sample_rate
+
+    max_chunk_samples = int(max_chunk_s * sample_rate)
+
+    if len(samples) <= max_chunk_samples:
+        pcm = mx.array(samples.reshape(1, 1, -1))
+        codes = model.encode(pcm)
+        mx.eval(codes)
+        codes_np = np.array(codes)
+        if codes_np.ndim == 3:
+            codes_np = codes_np.squeeze(0).T
+    else:
+        all_codes = []
+        pos = 0
+        while pos < len(samples):
+            end = min(pos + max_chunk_samples, len(samples))
+            chunk = samples[pos:end]
+            pcm = mx.array(chunk.reshape(1, 1, -1))
+            model.reset_all()
+            codes = model.encode(pcm)
+            mx.eval(codes)
+            codes_np = np.array(codes)
+            if codes_np.ndim == 3:
+                codes_np = codes_np.squeeze(0).T
+            all_codes.append(codes_np)
+            pos = end
+        codes_np = np.concatenate(all_codes, axis=0)
+
     return MimiCodes(
         codes=codes_np,
         frame_rate=MIMI_FRAME_RATE,
