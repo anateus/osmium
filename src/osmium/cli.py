@@ -7,8 +7,9 @@ from pathlib import Path
 
 from osmium.io.decode import decode, decode_streaming
 from osmium.io.encode import encode, encode_pcm_stdout
-from osmium.tsm.phase_vocoder import phase_vocoder_stretch, variable_rate_phase_vocoder
-from osmium.tsm.rate_schedule import uniform_rate_schedule, importance_to_rate_schedule
+from osmium.tsm.hybrid import hybrid_stretch, hybrid_variable_rate_stretch
+from osmium.tsm.phase_vocoder import phase_vocoder_stretch
+from osmium.tsm.rate_schedule import importance_to_rate_schedule
 from osmium.tsm.stream import process_streaming
 
 
@@ -21,8 +22,9 @@ from osmium.tsm.stream import process_streaming
 @click.option("--window", "window_size", default=2048, type=int, help="STFT window size")
 @click.option("--device", default="auto", type=click.Choice(["auto", "mlx", "cuda", "cpu"]), help="Compute device")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate TSM")
+@click.option("--no-hpss", is_flag=True, help="Disable HPSS, use phase vocoder only")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, window_size, device, no_model, analyze_only):
+def main(input_file, speed, output_file, stream, resolution, window_size, device, no_model, no_hpss, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -35,12 +37,12 @@ def main(input_file, speed, output_file, stream, resolution, window_size, device
     click.echo(f"osmium: {Path(input_file).name} @ {speed}x", err=True)
 
     if stream:
-        _stream_mode(input_file, speed, window_size, no_model, resolution_s)
+        _stream_mode(input_file, speed, window_size)
     else:
-        _batch_mode(input_file, speed, window_size, output_file, no_model, resolution_s, analyze_only)
+        _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, resolution_s, analyze_only)
 
 
-def _batch_mode(input_file, speed, window_size, output_file, no_model, resolution_s, analyze_only):
+def _batch_mode(input_file, speed, window_size, output_file, no_model, no_hpss, resolution_s, analyze_only):
     t0 = time.time()
     click.echo("  decoding...", err=True)
     audio = decode(input_file)
@@ -50,10 +52,16 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, resolutio
 
     if no_model:
         t1 = time.time()
-        click.echo(f"  uniform-rate stretching @ {speed}x...", err=True)
-        output_samples = phase_vocoder_stretch(
-            audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
-        )
+        mode = "HPSS hybrid" if not no_hpss else "phase vocoder"
+        click.echo(f"  uniform-rate {mode} @ {speed}x...", err=True)
+        if no_hpss:
+            output_samples = phase_vocoder_stretch(
+                audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
+            )
+        else:
+            output_samples = hybrid_stretch(
+                audio.samples, speed=speed, window_size=window_size, sample_rate=audio.sample_rate,
+            )
     else:
         try:
             from osmium.analyzer.mimi import encode as mimi_encode
@@ -93,19 +101,26 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, resolutio
                 click.echo(f"  wrote importance map to {out}", err=True)
             return
 
-        click.echo(f"  variable-rate stretching @ {speed}x...", err=True)
         rate_curve, rate_times = importance_to_rate_schedule(
             imp.scores, imp.times, target_speed=speed,
         )
         click.echo(f"  rate range: {rate_curve.min():.1f}x – {rate_curve.max():.1f}x", err=True)
 
-        output_samples = variable_rate_phase_vocoder(
-            audio.samples, rate_curve, rate_times,
-            window_size=window_size, sample_rate=audio.sample_rate,
-        )
+        mode = "HPSS hybrid" if not no_hpss else "phase vocoder"
+        click.echo(f"  variable-rate {mode} @ {speed}x...", err=True)
+        if no_hpss:
+            from osmium.tsm.phase_vocoder import variable_rate_phase_vocoder
+            output_samples = variable_rate_phase_vocoder(
+                audio.samples, rate_curve, rate_times,
+                window_size=window_size, sample_rate=audio.sample_rate,
+            )
+        else:
+            output_samples = hybrid_variable_rate_stretch(
+                audio.samples, rate_curve, rate_times,
+                window_size=window_size, sample_rate=audio.sample_rate,
+            )
 
     input_rms = np.sqrt(np.mean(audio.samples ** 2))
-
     output_samples = _soft_clip_and_normalize(output_samples, input_rms)
 
     stretch_time = time.time() - t1
@@ -120,7 +135,7 @@ def _batch_mode(input_file, speed, window_size, output_file, no_model, resolutio
         click.echo(f"  done in {encode_time:.1f}s (total: {time.time() - t0:.1f}s)", err=True)
 
 
-def _stream_mode(input_file, speed, window_size, no_model, resolution_s):
+def _stream_mode(input_file, speed, window_size):
     click.echo("  streaming mode (f32le mono 24kHz)...", err=True)
     chunks = decode_streaming(input_file, chunk_seconds=5.0)
     for output_chunk in process_streaming(chunks, speed=speed, window_size=window_size):
