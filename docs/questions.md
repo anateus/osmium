@@ -68,3 +68,29 @@ The `--stream` path currently uses uniform-rate only. Adding neural analysis to 
 **Decision made:** Defer neural streaming to Phase 3. Uniform streaming works now.
 
 ---
+
+## 2026-03-16: Mimi analysis speed — RESOLVED
+
+MLX-native Mimi encoder achieves ~500x realtime (0.06s for 30s), vs rustymimi's 3.4x realtime. No longer a bottleneck.
+
+---
+
+## 2026-03-16: PSOLA engine — not better for speech acceleration
+
+ABX testing: PSOLA produces "scrambly" artifacts on unvoiced consonants (t, k, s, f) because pitch detection fails on noise-like segments. Phase vocoder with identity phase locking + transient preservation + noise-band randomization sounds better overall.
+
+PSOLA remains available via `--engine psola` but phase_vocoder is the correct default.
+
+**Decision made:** Keep phase_vocoder as default. PSOLA is experimental.
+
+---
+
+## 2026-03-16: HPSS — introduces discontinuities
+
+Separately stretching harmonic/percussive components and recombining creates timing misalignment artifacts. Worse than single-path phase vocoder.
+
+Available via `--hpss` but not recommended. Potential improvement: better alignment between the two paths before recombination.
+
+**Decision made:** HPSS is opt-in experimental. Phase vocoder is default.
+
+---
