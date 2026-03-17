@@ -5,7 +5,7 @@ import click
 import numpy as np
 from pathlib import Path
 
-from osmium.io.decode import decode, decode_streaming
+from osmium.io.decode import decode, decode_streaming, probe_duration
 from osmium.io.encode import encode, encode_pcm_stdout
 
 
@@ -17,9 +17,9 @@ from osmium.io.encode import encode, encode_pcm_stdout
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate")
 @click.option("--smoothing", default=0.7, type=float, help="Mel temporal smoothing sigma (0=off)")
-@click.option("--chunks", "parallel_chunks", type=float, default=0, help="Chunk duration in seconds for long files (0=auto for >10min)")
+@click.option("--chunks", "chunk_duration", type=float, default=0, help="Chunk duration in seconds for long files (0=auto for >10min)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, no_model, smoothing, parallel_chunks, analyze_only):
+def main(input_file, speed, output_file, stream, resolution, no_model, smoothing, chunk_duration, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -27,137 +27,175 @@ def main(input_file, speed, output_file, stream, resolution, no_model, smoothing
     if speed <= 0:
         raise click.UsageError("Speed must be positive")
 
-    resolution_s = _parse_resolution(resolution)
-
-    click.echo(f"osmium: {Path(input_file).name} @ {speed}x", err=True)
-
     if stream:
         _stream_mode(input_file, speed)
     else:
-        _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothing, analyze_only, parallel_chunks)
+        _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing, analyze_only, chunk_duration)
 
 
-def _batch_mode(input_file, speed, output_file, no_model, resolution_s, smoothing, analyze_only, parallel_chunks):
+def _batch_mode(input_file, speed, output_file, no_model, resolution, smoothing, analyze_only, chunk_duration):
+    from rich.console import Console
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+
+    console = Console(stderr=True)
+    filename = Path(input_file).name
+    resolution_s = _parse_resolution(resolution)
+
+    console.print(f"[bold]osmium[/bold] {filename} @ [cyan]{speed}x[/cyan]")
+
     t0 = time.time()
-    click.echo("  decoding...", err=True)
-    audio = decode(input_file)
-    decode_time = time.time() - t0
-    duration = len(audio.samples) / audio.sample_rate
-    click.echo(f"  decoded {duration:.1f}s ({len(audio.samples)} samples) in {decode_time:.1f}s", err=True)
 
-    rate_curve = None
-    rate_times = None
+    probe_dur = probe_duration(input_file)
 
-    if no_model:
-        t1 = time.time()
-    else:
-        try:
-            from osmium.analyzer.importance import compute_importance, resample_importance
-        except ImportError:
-            raise click.ClickException(
-                "Neural analysis requires: uv pip install -e '.[neural]'\n"
-                "Or use --no-model for uniform-rate mode."
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30),
+        TextColumn("{task.fields[status]}"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+
+        decode_task = progress.add_task("Decoding", total=probe_dur, status="")
+
+        def on_decode_progress(decoded_s):
+            progress.update(decode_task, completed=decoded_s, status=f"{decoded_s:.0f}s")
+
+        if probe_dur and probe_dur > 30:
+            audio = decode(input_file, progress_callback=on_decode_progress)
+        else:
+            audio = decode(input_file)
+
+        duration = len(audio.samples) / audio.sample_rate
+        progress.update(decode_task, completed=duration, total=duration, status=f"{duration:.0f}s")
+        progress.remove_task(decode_task)
+
+        rate_curve = None
+        rate_times = None
+
+        if not no_model:
+            analyze_task = progress.add_task("Analyzing", total=None, status="loading mimi...")
+
+            try:
+                from osmium.analyzer.importance import compute_importance, resample_importance
+            except ImportError:
+                console.print("[red]Neural analysis requires:[/red] uv pip install -e '.[neural]'")
+                console.print("Or use --no-model for uniform-rate mode.")
+                raise SystemExit(1)
+
+            t1 = time.time()
+            try:
+                from osmium.analyzer.mimi_mlx import encode_mlx
+                progress.update(analyze_task, status="mimi (mlx)")
+                codes = encode_mlx(audio.samples, audio.sample_rate)
+            except (ImportError, Exception):
+                from osmium.analyzer.mimi import encode as mimi_encode
+                progress.update(analyze_task, status="mimi (cpu)")
+                codes = mimi_encode(audio.samples, audio.sample_rate)
+
+            analyze_time = time.time() - t1
+            progress.update(analyze_task, status=f"{duration/analyze_time:.0f}x realtime")
+
+            imp = compute_importance(codes, audio.samples, audio.sample_rate)
+            imp = resample_importance(imp, resolution_s)
+
+            progress.remove_task(analyze_task)
+
+            if analyze_only:
+                result = {
+                    "duration": duration,
+                    "frame_rate": imp.frame_rate,
+                    "resolution_s": resolution_s,
+                    "n_frames": len(imp.scores),
+                    "scores": imp.scores.tolist(),
+                    "times": imp.times.tolist(),
+                }
+                out = output_file or "-"
+                if out == "-":
+                    json.dump(result, sys.stdout, indent=2)
+                else:
+                    with open(out, "w") as f:
+                        json.dump(result, f, indent=2)
+                    console.print(f"  wrote importance map to {out}")
+                return
+
+            from osmium.tsm.rate_schedule import importance_to_rate_schedule
+            rate_curve, rate_times = importance_to_rate_schedule(
+                imp.scores, imp.times, target_speed=speed,
             )
 
-        t1 = time.time()
-        try:
-            from osmium.analyzer.mimi_mlx import encode_mlx
-            click.echo("  analyzing (mimi via mlx)...", err=True)
-            codes = encode_mlx(audio.samples, audio.sample_rate)
-        except (ImportError, Exception):
-            from osmium.analyzer.mimi import encode as mimi_encode
-            click.echo("  analyzing (mimi via rustymimi)...", err=True)
-            codes = mimi_encode(audio.samples, audio.sample_rate)
-        analyze_time = time.time() - t1
-        click.echo(f"  analyzed in {analyze_time:.1f}s ({duration/analyze_time:.1f}x realtime)", err=True)
+        use_chunked = chunk_duration > 0 or duration > 600
+        chunk_dur = chunk_duration if chunk_duration > 0 else 300.0
 
-        imp = compute_importance(codes, audio.samples, audio.sample_rate)
-        imp = resample_importance(imp, resolution_s)
+        if use_chunked:
+            n_chunks = max(1, int(np.ceil(duration / chunk_dur)))
+            stretch_task = progress.add_task("Stretching", total=n_chunks, status=f"0/{n_chunks} chunks")
+            from osmium.parallel import process_chunked
 
-        click.echo(f"  importance: mean={imp.scores.mean():.2f}, low(<0.2)={100*(imp.scores < 0.2).mean():.0f}%, high(>0.5)={100*(imp.scores > 0.5).mean():.0f}%", err=True)
+            def on_chunk_progress(done, total):
+                progress.update(stretch_task, completed=done, status=f"{done}/{total} chunks")
 
-        if analyze_only:
-            result = {
-                "duration": duration,
-                "frame_rate": imp.frame_rate,
-                "resolution_s": resolution_s,
-                "n_frames": len(imp.scores),
-                "scores": imp.scores.tolist(),
-                "times": imp.times.tolist(),
-            }
-            out = output_file or "-"
-            if out == "-":
-                json.dump(result, sys.stdout, indent=2)
-            else:
-                with open(out, "w") as f:
-                    json.dump(result, f, indent=2)
-                click.echo(f"  wrote importance map to {out}", err=True)
-            return
+            t_stretch = time.time()
+            output_samples = process_chunked(
+                audio.samples, speed=speed, sample_rate=audio.sample_rate,
+                chunk_duration=chunk_dur,
+                rate_curve=rate_curve, rate_times=rate_times,
+                smoothing=smoothing, on_progress=on_chunk_progress,
+            )
+            stretch_time = time.time() - t_stretch
+        else:
+            stretch_task = progress.add_task("Stretching", total=None, status="vocos")
+            t_stretch = time.time()
 
-        from osmium.tsm.rate_schedule import importance_to_rate_schedule
-        rate_curve, rate_times = importance_to_rate_schedule(
-            imp.scores, imp.times, target_speed=speed,
-        )
-        click.echo(f"  rate range: {rate_curve.min():.1f}x – {rate_curve.max():.1f}x", err=True)
+            try:
+                from osmium.tsm.vocos_mlx import vocos_mlx_stretch, vocos_mlx_variable_rate
+                progress.update(stretch_task, status="vocos (mlx)")
+                if rate_curve is not None:
+                    output_samples = vocos_mlx_variable_rate(
+                        audio.samples, rate_curve, rate_times,
+                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                    )
+                else:
+                    output_samples = vocos_mlx_stretch(
+                        audio.samples, speed,
+                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                    )
+            except (ImportError, Exception):
+                from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
+                progress.update(stretch_task, status="vocos (cpu)")
+                if rate_curve is not None:
+                    output_samples = vocos_variable_rate(
+                        audio.samples, rate_curve, rate_times,
+                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                    )
+                else:
+                    output_samples = vocos_stretch(
+                        audio.samples, speed,
+                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                    )
 
-    use_chunked = parallel_chunks > 0 or duration > 600
-    chunk_dur = parallel_chunks if parallel_chunks > 0 else 300.0
+            stretch_time = time.time() - t_stretch
 
-    if use_chunked:
-        n_chunks = max(1, int(duration / chunk_dur))
-        click.echo(f"  vocos @ {speed}x ({n_chunks} chunks, {chunk_dur:.0f}s each)...", err=True)
-        from osmium.parallel import process_chunked
+        progress.remove_task(stretch_task)
 
-        def on_progress(done, total):
-            click.echo(f"    chunk {done}/{total} complete", err=True)
+        input_rms = np.sqrt(np.mean(audio.samples ** 2))
+        output_samples = _soft_clip_and_normalize(output_samples, input_rms)
 
-        output_samples = process_chunked(
-            audio.samples, speed=speed, sample_rate=audio.sample_rate,
-            chunk_duration=chunk_dur,
-            rate_curve=rate_curve, rate_times=rate_times,
-            smoothing=smoothing, on_progress=on_progress,
-        )
-    else:
-        try:
-            from osmium.tsm.vocos_mlx import vocos_mlx_stretch, vocos_mlx_variable_rate
-            click.echo("  stretching (vocos via mlx)...", err=True)
-            if rate_curve is not None:
-                output_samples = vocos_mlx_variable_rate(
-                    audio.samples, rate_curve, rate_times,
-                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                )
-            else:
-                output_samples = vocos_mlx_stretch(
-                    audio.samples, speed,
-                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                )
-        except (ImportError, Exception):
-            from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
-            click.echo("  stretching (vocos via pytorch)...", err=True)
-            if rate_curve is not None:
-                output_samples = vocos_variable_rate(
-                    audio.samples, rate_curve, rate_times,
-                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                )
-            else:
-                output_samples = vocos_stretch(
-                    audio.samples, speed,
-                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                )
+        if output_file:
+            encode_task = progress.add_task("Encoding", total=None, status=Path(output_file).suffix)
+            encode(output_samples, audio.sample_rate, output_file)
+            progress.remove_task(encode_task)
 
-    input_rms = np.sqrt(np.mean(audio.samples ** 2))
-    output_samples = _soft_clip_and_normalize(output_samples, input_rms)
-
-    stretch_time = time.time() - t1
     out_duration = len(output_samples) / audio.sample_rate
-    click.echo(f"  output: {out_duration:.1f}s in {stretch_time:.1f}s", err=True)
+    total_time = time.time() - t0
 
+    console.print(
+        f"  [green]done[/green] {duration:.0f}s → {out_duration:.1f}s "
+        f"in {total_time:.1f}s ({duration/total_time:.0f}x realtime)"
+    )
     if output_file:
-        t2 = time.time()
-        click.echo(f"  encoding → {output_file}...", err=True)
-        encode(output_samples, audio.sample_rate, output_file)
-        encode_time = time.time() - t2
-        click.echo(f"  done in {encode_time:.1f}s (total: {time.time() - t0:.1f}s)", err=True)
+        console.print(f"  [dim]→ {output_file}[/dim]")
 
 
 def _stream_mode(input_file, speed):
