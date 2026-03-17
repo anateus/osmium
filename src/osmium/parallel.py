@@ -41,32 +41,16 @@ def plan_chunks(
     return chunks
 
 
-def _process_chunk(args: tuple) -> tuple[int, np.ndarray]:
-    chunk_data, speed, engine, window_size, sample_rate, rate_info, overlap_before, overlap_after = args
+def _process_chunk_vocos(args: tuple) -> tuple[int, int, np.ndarray]:
+    chunk_data, speed, sample_rate, rate_info, overlap_before, overlap_after, smoothing = args
 
-    if engine == "psola":
-        from osmium.tsm.psola_engine import psola_stretch, variable_rate_psola
-        if rate_info is not None:
-            rate_curve, rate_times = rate_info
-            output = variable_rate_psola(chunk_data, rate_curve, rate_times, sample_rate)
-        else:
-            output = psola_stretch(chunk_data, speed, sample_rate)
-    elif engine == "hybrid":
-        from osmium.tsm.voiced_split import hybrid_voiced_stretch, hybrid_voiced_variable_rate
-        if rate_info is not None:
-            rate_curve, rate_times = rate_info
-            output = hybrid_voiced_variable_rate(chunk_data, rate_curve, rate_times, window_size, sample_rate)
-        else:
-            output = hybrid_voiced_stretch(chunk_data, speed, window_size, sample_rate)
-    elif engine == "phase_vocoder":
-        from osmium.tsm.phase_vocoder import phase_vocoder_stretch, variable_rate_phase_vocoder
-        if rate_info is not None:
-            rate_curve, rate_times = rate_info
-            output = variable_rate_phase_vocoder(chunk_data, rate_curve, rate_times, window_size, sample_rate)
-        else:
-            output = phase_vocoder_stretch(chunk_data, speed, window_size, sample_rate)
+    from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
+
+    if rate_info is not None:
+        rate_curve, rate_times = rate_info
+        output = vocos_variable_rate(chunk_data, rate_curve, rate_times, sample_rate, smoothing)
     else:
-        raise ValueError(f"Unknown engine: {engine}")
+        output = vocos_stretch(chunk_data, speed, sample_rate, smoothing)
 
     out_overlap_before = int(overlap_before / speed) if overlap_before > 0 else 0
     out_overlap_after = int(overlap_after / speed) if overlap_after > 0 else 0
@@ -77,29 +61,28 @@ def _process_chunk(args: tuple) -> tuple[int, np.ndarray]:
 def process_parallel(
     samples: np.ndarray,
     speed: float,
-    engine: str = "phase_vocoder",
-    window_size: int = 2048,
     sample_rate: int = 24000,
-    chunk_duration: float = 3600.0,
+    chunk_duration: float = 300.0,
     overlap_duration: float = 1.0,
     rate_curve: np.ndarray | None = None,
     rate_times: np.ndarray | None = None,
     max_workers: int | None = None,
+    smoothing: float = 0.7,
     on_progress=None,
 ) -> np.ndarray:
     chunks = plan_chunks(len(samples), sample_rate, chunk_duration, overlap_duration)
 
     if len(chunks) == 1:
         rate_info = (rate_curve, rate_times) if rate_curve is not None else None
-        _, _, output = _process_chunk((
-            samples, speed, engine, window_size, sample_rate,
-            rate_info, 0, 0,
+        _, _, output = _process_chunk_vocos((
+            samples, speed, sample_rate,
+            rate_info, 0, 0, smoothing,
         ))
         return output
 
     args_list = []
     for chunk in chunks:
-        chunk_data = samples[chunk.start_sample:chunk.end_sample]
+        chunk_data = samples[chunk.start_sample:chunk.end_sample].copy()
 
         if rate_curve is not None and rate_times is not None:
             chunk_start_time = chunk.start_sample / sample_rate
@@ -119,13 +102,13 @@ def process_parallel(
             rate_info = None
 
         args_list.append((
-            chunk_data, speed, engine, window_size, sample_rate,
-            rate_info, chunk.overlap_before, chunk.overlap_after,
+            chunk_data, speed, sample_rate,
+            rate_info, chunk.overlap_before, chunk.overlap_after, smoothing,
         ))
 
     results = []
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_process_chunk, args): i for i, args in enumerate(args_list)}
+        futures = {executor.submit(_process_chunk_vocos, args): i for i, args in enumerate(args_list)}
         for future in futures:
             idx = futures[future]
             result = future.result()
