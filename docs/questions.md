@@ -85,6 +85,24 @@ PSOLA remains available via `--engine psola` but phase_vocoder is the correct de
 
 ---
 
+## 2026-03-17: MLX as future direction for PSOLA
+
+Current hybrid engine (voiced_split.py) processes segments independently using CREPE voicing detection, with per-segment rate interpolation. This works but has architectural limits:
+
+- Segments are processed sequentially, context-unaware
+- Window sizes are fixed per segment, not optimized across the full signal
+- CREPE hop is 10ms; PSOLA mark granularity is limited by pitch period
+
+MLX opens several avenues for improvement:
+1. **Batch PSOLA**: Instead of loop-per-mark, compute all synthesis frames as a matrix op (source frames stacked, Hanning windows applied in batch, scattered to output buffer). This would give ~10x throughput on Apple Silicon and enable larger analysis windows.
+2. **Larger kernels**: MLX convolutions with large receptive fields (e.g. 3000+ samples = 125ms at 24kHz) could learn pitch-period-scale patterns directly, replacing LP residual + peak-picking GCI detection.
+3. **Learned pitch marks**: A small CNN trained to predict GCI positions from raw audio would be more accurate than CREPE + heuristic search, especially at segment boundaries.
+4. **Transient-aware voicing**: Current voiced/unvoiced split is binary. MLX could produce continuous voicing scores per sample, enabling smooth blending instead of hard crossfades.
+
+**Near-term plan**: Keep current Praat-style hybrid as the stable engine. Explore batch PSOLA in MLX as a quality/speed improvement once the current engine is well-validated perceptually.
+
+---
+
 ## 2026-03-16: HPSS — introduces discontinuities
 
 Separately stretching harmonic/percussive components and recombining creates timing misalignment artifacts. Worse than single-path phase vocoder.

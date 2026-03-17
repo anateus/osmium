@@ -16,16 +16,15 @@ from osmium.tsm.stream import process_streaming
 @click.option("-s", "--speed", required=True, type=float, help="Target speed factor (e.g., 2.0, 3.5)")
 @click.option("-o", "--output", "output_file", type=click.Path(), help="Output file path")
 @click.option("--stream", is_flag=True, help="Stream raw f32le PCM to stdout")
-@click.option("--engine", default="phase_vocoder", type=click.Choice(["phase_vocoder", "psola", "hybrid", "crepe_hybrid", "crepe_pv"]), help="TSM engine")
+@click.option("--engine", default="hybrid", type=click.Choice(["phase_vocoder", "hybrid", "psola"]), help="TSM engine (hybrid=Praat PSOLA+PV, best quality)")
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
 @click.option("--window", "window_size", default=2048, type=int, help="STFT window size")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate TSM")
-@click.option("--hpss", is_flag=True, help="Enable HPSS (experimental, phase_vocoder engine only)")
 @click.option("--phoneme", is_flag=True, help="Enable phoneme alignment for importance (requires torch)")
 @click.option("--parallel", "parallel_chunks", type=float, default=0, help="Chunk duration in seconds for parallel processing (0=auto)")
 @click.option("--workers", type=int, default=0, help="Number of parallel workers (0=auto)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, engine, resolution, window_size, no_model, hpss, phoneme, parallel_chunks, workers, analyze_only):
+def main(input_file, speed, output_file, stream, engine, resolution, window_size, no_model, phoneme, parallel_chunks, workers, analyze_only):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -40,10 +39,10 @@ def main(input_file, speed, output_file, stream, engine, resolution, window_size
     if stream:
         _stream_mode(input_file, speed, window_size)
     else:
-        _batch_mode(input_file, speed, engine, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only, parallel_chunks, workers)
+        _batch_mode(input_file, speed, engine, window_size, output_file, no_model, phoneme, resolution_s, analyze_only, parallel_chunks, workers)
 
 
-def _batch_mode(input_file, speed, engine, window_size, output_file, no_model, hpss, phoneme, resolution_s, analyze_only, parallel_chunks, workers):
+def _batch_mode(input_file, speed, engine, window_size, output_file, no_model, phoneme, resolution_s, analyze_only, parallel_chunks, workers):
     t0 = time.time()
     click.echo("  decoding...", err=True)
     audio = decode(input_file)
@@ -134,7 +133,7 @@ def _batch_mode(input_file, speed, engine, window_size, output_file, no_model, h
     else:
         output_samples = _stretch_single(
             audio.samples, speed, engine, window_size, audio.sample_rate,
-            hpss, rate_curve, rate_times,
+            rate_curve, rate_times,
         )
 
     input_rms = np.sqrt(np.mean(audio.samples ** 2))
@@ -152,36 +151,18 @@ def _batch_mode(input_file, speed, engine, window_size, output_file, no_model, h
         click.echo(f"  done in {encode_time:.1f}s (total: {time.time() - t0:.1f}s)", err=True)
 
 
-def _stretch_single(samples, speed, engine, window_size, sample_rate, hpss, rate_curve, rate_times):
-    if engine == "psola":
-        from osmium.tsm.psola_engine import psola_stretch, variable_rate_psola
-        if rate_curve is not None:
-            return variable_rate_psola(samples, rate_curve, rate_times, sample_rate)
-        return psola_stretch(samples, speed, sample_rate)
-
-    if engine == "crepe_hybrid":
-        from osmium.tsm.crepe_hybrid import crepe_hybrid_stretch, crepe_hybrid_variable_rate
-        if rate_curve is not None:
-            return crepe_hybrid_variable_rate(samples, rate_curve, rate_times, window_size, sample_rate)
-        return crepe_hybrid_stretch(samples, speed, window_size, sample_rate)
-
-    if engine == "crepe_pv":
-        from osmium.tsm.crepe_enhanced_pv import crepe_enhanced_stretch, crepe_enhanced_variable_rate
-        if rate_curve is not None:
-            return crepe_enhanced_variable_rate(samples, rate_curve, rate_times, window_size, sample_rate)
-        return crepe_enhanced_stretch(samples, speed, window_size, sample_rate)
-
+def _stretch_single(samples, speed, engine, window_size, sample_rate, rate_curve, rate_times):
     if engine == "hybrid":
         from osmium.tsm.voiced_split import hybrid_voiced_stretch, hybrid_voiced_variable_rate
         if rate_curve is not None:
             return hybrid_voiced_variable_rate(samples, rate_curve, rate_times, window_size, sample_rate)
         return hybrid_voiced_stretch(samples, speed, window_size, sample_rate)
 
-    if hpss:
-        from osmium.tsm.hybrid import hybrid_stretch, hybrid_variable_rate_stretch
+    if engine == "psola":
+        from osmium.tsm.psola_engine import psola_stretch, variable_rate_psola
         if rate_curve is not None:
-            return hybrid_variable_rate_stretch(samples, rate_curve, rate_times, window_size, sample_rate)
-        return hybrid_stretch(samples, speed, window_size, sample_rate)
+            return variable_rate_psola(samples, rate_curve, rate_times, sample_rate)
+        return psola_stretch(samples, speed, sample_rate)
 
     from osmium.tsm.phase_vocoder import phase_vocoder_stretch, variable_rate_phase_vocoder
     if rate_curve is not None:

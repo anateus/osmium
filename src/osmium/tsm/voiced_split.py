@@ -16,25 +16,22 @@ def detect_voiced_segments(
     energy_threshold: float = 0.02,
     zcr_threshold: float = 0.15,
     min_segment_ms: float = 50.0,
+    use_crepe: bool = True,
+    crepe_confidence_threshold: float = 0.5,
 ) -> list[VoicedSegment]:
     frame_size = int(frame_size_ms * sample_rate / 1000)
     n_frames = len(samples) // frame_size
 
-    voiced = np.zeros(n_frames, dtype=bool)
-
-    for i in range(n_frames):
-        start = i * frame_size
-        frame = samples[start:start + frame_size]
-
-        energy = np.sqrt(np.mean(frame ** 2))
-        if energy < energy_threshold:
-            voiced[i] = False
-            continue
-
-        signs = np.sign(frame)
-        zcr = np.sum(np.abs(np.diff(signs)) > 0) / (len(frame) - 1)
-
-        voiced[i] = zcr < zcr_threshold
+    if use_crepe:
+        try:
+            voiced = _detect_voiced_crepe(
+                samples, sample_rate, n_frames, frame_size,
+                energy_threshold, crepe_confidence_threshold,
+            )
+        except Exception:
+            voiced = _detect_voiced_zcr(samples, n_frames, frame_size, energy_threshold, zcr_threshold)
+    else:
+        voiced = _detect_voiced_zcr(samples, n_frames, frame_size, energy_threshold, zcr_threshold)
 
     min_frames = max(1, int(min_segment_ms / frame_size_ms))
     segments = []
@@ -65,6 +62,42 @@ def detect_voiced_segments(
             merged.append(seg)
 
     return merged
+
+
+def _detect_voiced_zcr(samples, n_frames, frame_size, energy_threshold, zcr_threshold):
+    voiced = np.zeros(n_frames, dtype=bool)
+    for i in range(n_frames):
+        start = i * frame_size
+        frame = samples[start:start + frame_size]
+        energy = np.sqrt(np.mean(frame ** 2))
+        if energy < energy_threshold:
+            continue
+        signs = np.sign(frame)
+        zcr = np.sum(np.abs(np.diff(signs)) > 0) / (len(frame) - 1)
+        voiced[i] = zcr < zcr_threshold
+    return voiced
+
+
+def _detect_voiced_crepe(samples, sample_rate, n_frames, frame_size, energy_threshold, confidence_threshold):
+    from osmium.analyzer.crepe_mlx import predict as crepe_predict
+
+    pitch_result = crepe_predict(samples, sample_rate, capacity="tiny")
+    crepe_hop = int(sample_rate * 0.01)
+
+    voiced = np.zeros(n_frames, dtype=bool)
+    for i in range(n_frames):
+        start = i * frame_size
+        frame = samples[start:start + frame_size]
+        energy = np.sqrt(np.mean(frame ** 2))
+        if energy < energy_threshold:
+            continue
+
+        frame_time = start / sample_rate
+        crepe_idx = int(frame_time / (crepe_hop / sample_rate))
+        crepe_idx = min(crepe_idx, len(pitch_result.confidence) - 1)
+        voiced[i] = pitch_result.confidence[crepe_idx] > confidence_threshold
+
+    return voiced
 
 
 def hybrid_voiced_stretch(
