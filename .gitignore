@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.venv/
+*.so
+
+# Full audiobook files (large)
+samples/full/*
+!samples/full/.gitkeep
+
+# Model weights
+models/
+
+# OS
+.DS_Store
