@@ -16,7 +16,7 @@ from osmium.tsm.stream import process_streaming
 @click.option("-s", "--speed", required=True, type=float, help="Target speed factor (e.g., 2.0, 3.5)")
 @click.option("-o", "--output", "output_file", type=click.Path(), help="Output file path")
 @click.option("--stream", is_flag=True, help="Stream raw f32le PCM to stdout")
-@click.option("--engine", default="phase_vocoder", type=click.Choice(["phase_vocoder", "psola", "hybrid", "crepe_hybrid"]), help="TSM engine")
+@click.option("--engine", default="phase_vocoder", type=click.Choice(["phase_vocoder", "psola", "hybrid", "crepe_hybrid", "crepe_pv"]), help="TSM engine")
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
 @click.option("--window", "window_size", default=2048, type=int, help="STFT window size")
 @click.option("--no-model", is_flag=True, help="Skip neural analysis, use uniform-rate TSM")
@@ -164,6 +164,12 @@ def _stretch_single(samples, speed, engine, window_size, sample_rate, hpss, rate
         if rate_curve is not None:
             return crepe_hybrid_variable_rate(samples, rate_curve, rate_times, window_size, sample_rate)
         return crepe_hybrid_stretch(samples, speed, window_size, sample_rate)
+
+    if engine == "crepe_pv":
+        from osmium.tsm.crepe_enhanced_pv import crepe_enhanced_stretch, crepe_enhanced_variable_rate
+        if rate_curve is not None:
+            return crepe_enhanced_variable_rate(samples, rate_curve, rate_times, window_size, sample_rate)
+        return crepe_enhanced_stretch(samples, speed, window_size, sample_rate)
 
     if engine == "hybrid":
         from osmium.tsm.voiced_split import hybrid_voiced_stretch, hybrid_voiced_variable_rate
