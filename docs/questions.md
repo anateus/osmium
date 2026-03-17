@@ -30,3 +30,41 @@ For the phoneme aligner, options are:
 **Decision made:** Start with Mimi-only importance (option 3), add phoneme alignment as a quality improvement later. This gets us to a working variable-rate system faster.
 
 ---
+
+## 2026-03-16: rustymimi API — StreamTokenizer vs Tokenizer
+
+`rustymimi.Tokenizer.encode_step()` has a numpy ABI incompatibility with numpy 2.x (PyO3 binding issue). `rustymimi.StreamTokenizer` works fine with the async encode/get_encoded pattern. Using StreamTokenizer with 1:1 encode→drain pattern.
+
+**Decision made:** Use StreamTokenizer. May revisit if rustymimi updates fix Tokenizer.
+
+---
+
+## 2026-03-16: Importance scoring weights
+
+Current weights: transition=0.35, energy=0.30, multi_cb=0.35. These are initial values — would benefit from perceptual testing to tune. Could expose as CLI flags if needed.
+
+**Open question for Mike:** After listening to neural vs uniform outputs, do the importance weights need adjustment? Would you prefer more or less protection of important segments?
+
+---
+
+## 2026-03-16: Mimi analysis speed
+
+Currently ~3.5x realtime on Apple Silicon. For a 12h audiobook, analysis takes ~3.4h. This is the bottleneck — the TSM phase vocoder itself is ~200x realtime for uniform or ~3.5x for variable-rate (dominated by Mimi analysis time, not TSM).
+
+Options for improvement:
+1. Batch multiple chunks to StreamTokenizer (need to test if API supports it)
+2. Use the MLX Mimi model directly instead of rustymimi
+3. Skip analysis for obvious silence (energy-based pre-filter)
+4. Accept the speed and pipeline it — analyze while stretching previous chunks
+
+**Open question:** Is ~3.5x realtime acceptable for batch mode, or should we prioritize speed?
+
+---
+
+## 2026-03-16: Streaming mode doesn't use neural analysis yet
+
+The `--stream` path currently uses uniform-rate only. Adding neural analysis to streaming requires a lookahead buffer approach (analyze N seconds ahead, then stretch). Achievable but adds latency.
+
+**Decision made:** Defer neural streaming to Phase 3. Uniform streaming works now.
+
+---
