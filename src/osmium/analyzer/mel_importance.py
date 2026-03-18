@@ -5,12 +5,18 @@ from osmium.analyzer.importance import ImportanceMap
 def compute_mel_importance(
     mel: np.ndarray,
     duration: float,
-    weight_flux: float = 0.5,
-    weight_energy: float = 0.5,
+    weight_flux: float = 0.6,
+    weight_energy: float = 0.4,
+    hf_boost: float = 2.0,
 ) -> ImportanceMap:
     T = mel.shape[1]
+    n_mels = mel.shape[0]
 
-    flux = np.sqrt(np.sum(np.diff(mel, axis=1) ** 2, axis=0))
+    hf_weights = np.ones(n_mels, dtype=np.float32)
+    hf_weights[n_mels // 2:] = hf_boost
+
+    weighted_mel = mel * hf_weights[:, None]
+    flux = np.sqrt(np.sum(np.diff(weighted_mel, axis=1) ** 2, axis=0))
     flux = np.concatenate(([0.0], flux))
     flux_max = flux.max()
     if flux_max > 0:
