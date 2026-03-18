@@ -18,7 +18,7 @@ from osmium.io.encode import encode, encode_pcm_stdout
 @click.option("--uniform", is_flag=True, help="Skip importance analysis, use uniform-rate")
 @click.option("--mimi", is_flag=True, help="Use Mimi neural codec for importance (slower, slightly better)")
 @click.option("--smoothing", default=0.7, type=float, help="Mel temporal smoothing sigma (0=off)")
-@click.option("--chunks", "chunk_duration", type=float, default=0, help="Chunk duration in seconds for long files (0=auto for >10min)")
+@click.option("--chunk-size", "chunk_duration", type=float, default=0, help="Process in chunks of N seconds (lower = less memory, 0 = auto-chunk files >10min at 300s)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
 def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only):
     """Osmium — high-quality speech acceleration."""
