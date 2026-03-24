@@ -119,6 +119,21 @@ Vocos (github.com/gemelo-ai/vocos) works in frequency domain (ISTFT-based), is v
 
 ---
 
+## 2026-03-17: Parallel chunked encoding — future optimization
+
+Encode output in parallel chunks then lossless-concat with ffmpeg concat demuxer:
+1. Each chunk encodes to a temp file via independent ffmpeg process
+2. Write concat manifest: `file 'chunk_001.m4a'\nfile 'chunk_002.m4a'\n...`
+3. `ffmpeg -f concat -i manifest.txt -c copy output.m4a` — bitstream copy, no re-encode
+
+For AAC/M4A this works cleanly (independently decodable segments). Would also enable pipelining: stretch chunk N → encode chunk N in background → stretch chunk N+1.
+
+Current encode time is ~10% of total (2.5min of 24.4min for 12h audiobook). Modest standalone gain but enables true pipeline overlap.
+
+**Decision:** Deferred. Mimi analysis (~11min) is the dominant bottleneck.
+
+---
+
 ## 2026-03-16: HPSS — introduces discontinuities
 
 Separately stretching harmonic/percussive components and recombining creates timing misalignment artifacts. Worse than single-path phase vocoder.

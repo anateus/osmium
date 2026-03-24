@@ -60,8 +60,12 @@ def importance_to_rate_schedule(
 
     for i in range(1, len(rates)):
         delta = rates[i] - rates[i - 1]
-        if abs(delta) > max_rate_change:
-            rates[i] = rates[i - 1] + np.sign(delta) * max_rate_change
+        if delta > max_rate_change:
+            rates[i] = rates[i - 1] + max_rate_change
+
+    if len(rates) > 4:
+        rates = gaussian_filter1d(rates, sigma=2.0)
+        rates = np.clip(rates, min_rate, max_rate)
 
     for _ in range(10):
         output_durations = dt / rates

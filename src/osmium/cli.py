@@ -20,7 +20,8 @@ from osmium.io.encode import encode, encode_pcm_stdout
 @click.option("--smoothing", default=0.7, type=float, help="Mel temporal smoothing sigma (0=off)")
 @click.option("--chunk-size", "chunk_duration", type=float, default=0, help="Process in chunks of N seconds (lower = less memory, 0 = auto-chunk files >10min at 300s)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
-def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only):
+@click.option("--no-prosody", is_flag=True, help="Disable prosodic envelope (sentence-level rhythm preservation)")
+def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -31,10 +32,10 @@ def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoo
     if stream:
         _stream_mode(input_file, speed)
     else:
-        _batch_mode(input_file, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration)
+        _batch_mode(input_file, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody)
 
 
-def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration):
+def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False):
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
@@ -83,6 +84,10 @@ def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, s
                 imp = _analyze_mimi(audio, progress, console)
             else:
                 imp = _analyze_mel(audio, progress)
+
+            if use_prosody:
+                from osmium.analyzer.prosody import apply_prosodic_modulation
+                imp = apply_prosodic_modulation(imp, audio.samples, audio.sample_rate)
 
             imp = resample_importance(imp, resolution_s)
 
