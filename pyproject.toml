@@ -25,6 +25,9 @@ psola = [
 denoise = [
     "deepfilternet>=0.5,<1.0",
 ]
+demucs = [
+    "demucs>=4.0",
+]
 
 [project.scripts]
 osmium = "osmium.cli:main"
