@@ -5,7 +5,7 @@ CLIPS_DIR="$(cd "$(dirname "$0")/../samples/clips" && pwd)"
 ACCEL_DIR="$CLIPS_DIR/accelerated"
 
 SPEEDS=(2 2.3 2.6 2.8 3 3.2 3.8)
-MODES=(uniform no-mimi neural gate-denoise deep-denoise)
+MODES=(uniform no-mimi neural gate-denoise deep-denoise demucs-denoise)
 
 for speed in "${SPEEDS[@]}"; do
     for mode in "${MODES[@]}"; do
@@ -27,7 +27,8 @@ for speed in "${SPEEDS[@]}"; do
                 no-mimi)       ;;
                 neural)        flags="$flags --mimi" ;;
                 gate-denoise)  flags="$flags --denoise gate" ;;
-                deep-denoise)  flags="$flags --denoise deep" ;;
+                deep-denoise)   flags="$flags --denoise deep" ;;
+                demucs-denoise) flags="$flags --denoise demucs" ;;
             esac
 
             echo ">> ${speed}x $mode: $(basename "$wav")"

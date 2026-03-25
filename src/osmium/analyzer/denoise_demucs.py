@@ -6,39 +6,41 @@ def demucs_separate(
     sample_rate: int = 24000,
 ) -> np.ndarray:
     try:
-        import demucs.api
+        import demucs.separate
     except ImportError:
         raise ImportError(
             "Demucs not installed. Install with: uv pip install -e '.[demucs]'"
         )
     import sys
-    import torch
+    import tempfile
+    import soundfile as sf
 
     sys.stderr.write("Loading htdemucs model (may download ~1GB on first run)...\n")
-    separator = demucs.api.Separator(model="htdemucs", segment=12)
 
-    if samples.ndim == 1:
-        audio_tensor = torch.from_numpy(samples.copy()).unsqueeze(0).float()
-    else:
-        audio_tensor = torch.from_numpy(samples.copy()).float()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = f"{tmpdir}/input.wav"
+        sf.write(input_path, samples, sample_rate)
 
-    if sample_rate != separator.samplerate:
-        import torchaudio
-        audio_tensor = torchaudio.functional.resample(
-            audio_tensor, sample_rate, separator.samplerate,
-        )
+        demucs.separate.main([
+            "-n", "htdemucs",
+            "--two-stems", "vocals",
+            "-o", tmpdir,
+            "--segment", "7",
+            input_path,
+        ])
 
-    _, separated = separator.separate_tensor(audio_tensor)
-    vocals = separated["vocals"]
+        vocals_path = f"{tmpdir}/htdemucs/input/vocals.wav"
+        vocals, _ = sf.read(vocals_path, dtype="float32")
 
-    if sample_rate != separator.samplerate:
-        import torchaudio
-        vocals = torchaudio.functional.resample(
-            vocals, separator.samplerate, sample_rate,
-        )
+    if vocals.ndim > 1:
+        vocals = vocals.mean(axis=1)
 
-    result = vocals.squeeze().numpy().astype(np.float32)
-    if result.ndim > 1:
-        result = result.mean(axis=0)
+    if sample_rate != 44100:
+        from scipy.signal import resample_poly
+        from math import gcd
+        up = sample_rate
+        down = 44100
+        g = gcd(up, down)
+        vocals = resample_poly(vocals, up // g, down // g).astype(np.float32)
 
-    return result
+    return vocals.astype(np.float32)
