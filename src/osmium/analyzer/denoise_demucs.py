@@ -1,46 +1,54 @@
 import numpy as np
 
+_model = None
 
-def demucs_separate(
-    samples: np.ndarray,
-    sample_rate: int = 24000,
-) -> np.ndarray:
+
+def _load_model():
+    global _model
+    if _model is not None:
+        return _model
     try:
-        import demucs.separate
+        from demucs.pretrained import get_model
     except ImportError:
         raise ImportError(
             "Demucs not installed. Install with: uv pip install -e '.[demucs]'"
         )
     import sys
-    import tempfile
-    import soundfile as sf
+    sys.stderr.write("Loading htdemucs model (may download ~80MB on first run)...\n")
+    _model = get_model("htdemucs")
+    _model.eval()
+    return _model
 
-    sys.stderr.write("Loading htdemucs model (may download ~1GB on first run)...\n")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        input_path = f"{tmpdir}/input.wav"
-        sf.write(input_path, samples, sample_rate)
+def demucs_separate(
+    samples: np.ndarray,
+    sample_rate: int = 24000,
+) -> np.ndarray:
+    from demucs.apply import apply_model
+    import torch
+    import torchaudio
 
-        demucs.separate.main([
-            "-n", "htdemucs",
-            "--two-stems", "vocals",
-            "-o", tmpdir,
-            "--segment", "7",
-            input_path,
-        ])
+    model = _load_model()
 
-        vocals_path = f"{tmpdir}/htdemucs/input/vocals.wav"
-        vocals, _ = sf.read(vocals_path, dtype="float32")
+    mono = torch.from_numpy(samples.copy()).float()
+    if mono.ndim == 1:
+        mono = mono.unsqueeze(0)
+    audio = mono.expand(model.audio_channels, -1)
 
-    if vocals.ndim > 1:
-        vocals = vocals.mean(axis=1)
+    if sample_rate != model.samplerate:
+        audio = torchaudio.functional.resample(audio, sample_rate, model.samplerate)
 
-    if sample_rate != 44100:
-        from scipy.signal import resample_poly
-        from math import gcd
-        up = sample_rate
-        down = 44100
-        g = gcd(up, down)
-        vocals = resample_poly(vocals, up // g, down // g).astype(np.float32)
+    ref = audio.mean(0)
+    audio = (audio - ref.mean()) / ref.std()
 
-    return vocals.astype(np.float32)
+    sources = apply_model(model, audio.unsqueeze(0), segment=7)[0]
+    sources = sources * ref.std() + ref.mean()
+
+    vocals_idx = model.sources.index("vocals")
+    vocals = sources[vocals_idx]
+
+    if sample_rate != model.samplerate:
+        vocals = torchaudio.functional.resample(vocals, model.samplerate, sample_rate)
+
+    result = vocals.mean(0).numpy().astype(np.float32)
+    return result
