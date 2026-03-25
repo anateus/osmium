@@ -252,8 +252,8 @@ def _apply_denoise(samples, sample_rate, method, console):
         from osmium.analyzer.denoise import spectral_gate
         return spectral_gate(samples, sample_rate)
     elif method == "deep":
-        from osmium.analyzer.denoise_deep import deep_filter
-        return deep_filter(samples, sample_rate)
+        from osmium.analyzer.denoise import spectral_gate
+        return spectral_gate(samples, sample_rate, stationary=False, prop_decrease=0.95)
     elif method == "demucs":
         try:
             from osmium.analyzer.denoise_demucs import demucs_separate
