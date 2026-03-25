@@ -272,7 +272,7 @@ def vocos_mlx_variable_rate(
     smoothing_sigma: float = 0.7,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
-    from scipy.ndimage import gaussian_filter1d
+    from osmium.tsm.smooth import adaptive_smooth_mel
 
     model = _load_model()
     mel = extract_mel(samples, sample_rate)
@@ -298,7 +298,13 @@ def vocos_mlx_variable_rate(
     resampled = interp_fn(source_indices)
 
     if smoothing_sigma > 0:
-        resampled = gaussian_filter1d(resampled, sigma=smoothing_sigma, axis=1)
+        compression_ratios = np.gradient(source_indices)
+        compression_ratios = np.maximum(compression_ratios, 0.1)
+        sigma_min = min(0.3, smoothing_sigma)
+        resampled = adaptive_smooth_mel(
+            resampled, compression_ratios,
+            sigma_min=sigma_min, sigma_max=smoothing_sigma,
+        )
 
     features = mx.array(resampled.astype(np.float32)[np.newaxis])
     audio = model(features)
