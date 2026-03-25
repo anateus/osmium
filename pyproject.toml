@@ -9,6 +9,7 @@ dependencies = [
     "soundfile>=0.12",
     "scipy>=1.11",
     "rich>=13.0",
+    "noisereduce>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -21,9 +22,6 @@ phoneme = [
 ]
 psola = [
     "psola>=0.0.1",
-]
-denoise = [
-    "noisereduce>=3.0",
 ]
 demucs = [
     "demucs>=4.0",

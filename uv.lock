@@ -1422,6 +1422,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "noisereduce" },
     { name = "numpy" },
     { name = "rich" },
     { name = "scipy" },
@@ -1431,9 +1432,6 @@ dependencies = [
 [package.optional-dependencies]
 demucs = [
     { name = "demucs" },
-]
-denoise = [
-    { name = "noisereduce" },
 ]
 neural = [
     { name = "huggingface-hub" },
@@ -1457,7 +1455,7 @@ requires-dist = [
     { name = "demucs", marker = "extra == 'demucs'", specifier = ">=4.0" },
     { name = "huggingface-hub", marker = "extra == 'neural'", specifier = ">=0.28" },
     { name = "moshi-mlx", marker = "extra == 'neural'", specifier = ">=0.3.0" },
-    { name = "noisereduce", marker = "extra == 'denoise'", specifier = ">=3.0" },
+    { name = "noisereduce", specifier = ">=3.0" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "psola", marker = "extra == 'psola'", specifier = ">=0.0.1" },
     { name = "rich", specifier = ">=13.0" },
@@ -1465,7 +1463,7 @@ requires-dist = [
     { name = "soundfile", specifier = ">=0.12" },
     { name = "torchaudio", marker = "extra == 'phoneme'", specifier = ">=2.0" },
 ]
-provides-extras = ["neural", "phoneme", "psola", "denoise", "demucs"]
+provides-extras = ["neural", "phoneme", "psola", "demucs"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]
