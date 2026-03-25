@@ -9,15 +9,20 @@ Most time-stretching tools (sox, Rubber Band) apply a uniform rate across the wh
 Requires Python 3.11+ and ffmpeg.
 
 ```bash
+uv tool install '.[neural,demucs]'
+```
+
+This installs `osmium` as a command with all the extras (Mimi neural importance, Demucs source separation). On Apple Silicon, add MLX for GPU acceleration:
+
+```bash
+uv tool install --with mlx '.[neural,demucs]'
+```
+
+For development:
+```bash
 git clone https://github.com/user/osmium
 cd osmium
 uv sync
-```
-
-Optional extras:
-```bash
-uv pip install -e '.[neural]'   # Mimi neural codec importance (slower, slightly better)
-uv pip install -e '.[demucs]'   # Demucs source separation for heavy noise/music removal
 ```
 
 ## Usage
