@@ -39,6 +39,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/osmium"]
 
+[tool.uv]
+conflicts = [
+    [
+        { extra = "neural" },
+        { extra = "denoise" },
+    ],
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
