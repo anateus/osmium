@@ -5,9 +5,9 @@ from osmium.analyzer.importance import ImportanceMap
 def compute_mel_importance(
     mel: np.ndarray,
     duration: float,
-    weight_flux: float = 0.6,
-    weight_energy: float = 0.4,
-    hf_boost: float = 2.0,
+    weight_flux: float = 0.65,
+    weight_energy: float = 0.35,
+    hf_boost: float = 2.5,
 ) -> ImportanceMap:
     T = mel.shape[1]
     n_mels = mel.shape[0]

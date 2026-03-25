@@ -9,6 +9,7 @@ dependencies = [
     "soundfile>=0.12",
     "scipy>=1.11",
     "rich>=13.0",
+    "noisereduce>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,9 @@ phoneme = [
 psola = [
     "psola>=0.0.1",
 ]
+demucs = [
+    "demucs>=4.0",
+]
 
 [project.scripts]
 osmium = "osmium.cli:main"
@@ -32,3 +36,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/osmium"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

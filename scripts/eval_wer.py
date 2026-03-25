@@ -117,13 +117,14 @@ def eval_osmium(
             duration = len(samples) / sr
             imp = compute_mel_importance(
                 mel, duration,
-                weight_flux=cfg.get("flux_w", 0.6),
-                weight_energy=cfg.get("energy_w", 0.4),
-                hf_boost=cfg.get("hf_boost", 2.0),
+                weight_flux=cfg.get("flux_w", 0.65),
+                weight_energy=cfg.get("energy_w", 0.35),
+                hf_boost=cfg.get("hf_boost", 2.5),
             )
             imp = resample_importance(imp, cfg.get("resolution", 0.02))
             rate_curve, rate_times = importance_to_rate_schedule(
                 imp.scores, imp.times, target_speed=speed,
+                gamma=cfg.get("rate_gamma", 1.5),
             )
             out = vocos_mlx_variable_rate(
                 samples, rate_curve, rate_times, sr,
@@ -159,6 +160,8 @@ def build_sweep_configs(param: str, values: list[str]) -> dict[str, dict]:
             configs[label] = {"hf_boost": vf}
         elif param == "flux_w":
             configs[label] = {"flux_w": vf, "energy_w": 1.0 - vf}
+        elif param == "rate_gamma":
+            configs[label] = {"rate_gamma": vf}
         elif param == "speed":
             configs[label] = {"_speed_override": vf}
         else:

@@ -10,6 +10,8 @@ def _load_vocos():
     global _vocos
     if _vocos is not None:
         return _vocos
+    import logging
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
     from vocos import Vocos
     _vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
     return _vocos
@@ -52,6 +54,8 @@ def vocos_variable_rate(
     sample_rate: int = 24000,
     smoothing_sigma: float = 0.7,
 ) -> np.ndarray:
+    from osmium.tsm.smooth import adaptive_smooth_mel
+
     vocos = _load_vocos()
 
     audio_tensor = torch.from_numpy(samples.copy()).unsqueeze(0)
@@ -70,7 +74,6 @@ def vocos_variable_rate(
     output_times = np.cumsum(dt / mel_rates)
 
     total_output_duration = output_times[-1]
-    target_T = max(1, int(T * duration / (total_output_duration * mel_rates.mean())))
     target_T = max(1, int(total_output_duration / (duration / T)))
 
     target_mel_times = np.linspace(0, total_output_duration, target_T)
@@ -78,19 +81,17 @@ def vocos_variable_rate(
     source_indices = np.interp(target_mel_times, output_times, np.arange(T))
 
     mel_2d = feat_np[0]
-    resampled = np.zeros((mel_2d.shape[0], target_T), dtype=np.float64)
-    for i in range(target_T):
-        idx = source_indices[i]
-        lo = int(np.floor(idx))
-        hi = min(lo + 1, T - 1)
-        frac = idx - lo
-        resampled[:, i] = mel_2d[:, lo] * (1 - frac) + mel_2d[:, hi] * frac
-
     interp_fn = interp1d(np.arange(T), mel_2d, axis=1, kind="cubic", fill_value="extrapolate")
     resampled = interp_fn(source_indices)
 
     if smoothing_sigma > 0:
-        resampled = gaussian_filter1d(resampled, sigma=smoothing_sigma, axis=1)
+        compression_ratios = np.gradient(source_indices)
+        compression_ratios = np.maximum(compression_ratios, 0.1)
+        sigma_min = min(0.3, smoothing_sigma)
+        resampled = adaptive_smooth_mel(
+            resampled, compression_ratios,
+            sigma_min=sigma_min, sigma_max=smoothing_sigma,
+        )
 
     resampled_tensor = torch.from_numpy(resampled.astype(np.float32)[np.newaxis])
     audio_out = vocos.decode(resampled_tensor)
