@@ -22,6 +22,9 @@ phoneme = [
 psola = [
     "psola>=0.0.1",
 ]
+denoise = [
+    "deepfilternet>=0.5,<1.0",
+]
 
 [project.scripts]
 osmium = "osmium.cli:main"
