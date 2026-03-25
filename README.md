@@ -60,6 +60,20 @@ osmium input.mp3 -s 3.0 --analyze-only -o importance.json
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full picture.
 
+## Sample clips
+
+`samples/clips/` contains short clips (15s and 30s) extracted from the public domain LibriVox recording of [Moby Dick by Herman Melville](https://librivox.org/moby-dick-by-herman-melville). These are used for evaluation and listening comparisons.
+
+Generate accelerated versions across all speeds and modes:
+```bash
+scripts/generate_accelerated.sh
+```
+
+This produces MP3s in `samples/clips/accelerated/{speed}/{mode}/` for speeds 2x–3.8x and three modes:
+- **uniform** — flat rate, no importance analysis (`--uniform`)
+- **no-mimi** — mel-based importance (default)
+- **neural** — Mimi neural codec importance (`--mimi`)
+
 ## Evaluation
 
 ```bash
