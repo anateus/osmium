@@ -166,6 +166,7 @@ def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, s
 
         progress.remove_task(stretch_task)
 
+        output_samples = _match_spectral_tilt(audio.samples, output_samples, audio.sample_rate)
         output_samples = _soft_clip_and_normalize(output_samples, input_rms)
 
         if output_file:
@@ -260,6 +261,65 @@ def _apply_denoise(samples, sample_rate, method, console):
         except ImportError:
             console.print("[red]Demucs requires:[/red] uv pip install -e '.\\[demucs]'")
             raise SystemExit(1)
+
+
+def _match_spectral_tilt(
+    reference: np.ndarray,
+    output: np.ndarray,
+    sample_rate: int,
+    n_fft: int = 2048,
+    max_correction_db: float = 3.0,
+) -> np.ndarray:
+    def avg_spectrum(x):
+        hop = n_fft // 2
+        n_frames = max(1, (len(x) - n_fft) // hop)
+        if n_frames < 1:
+            return np.ones(n_fft // 2 + 1)
+        frames = np.lib.stride_tricks.as_strided(
+            x, shape=(n_frames, n_fft),
+            strides=(x.strides[0] * hop, x.strides[0]),
+        ).copy()
+        frames *= np.hanning(n_fft + 1)[:n_fft]
+        mag = np.abs(np.fft.rfft(frames, n=n_fft))
+        return np.maximum(mag.mean(axis=0), 1e-10)
+
+    ref_spec = avg_spectrum(reference)
+    out_spec = avg_spectrum(output)
+
+    correction = ref_spec / (out_spec + 1e-10)
+    correction_db = 20 * np.log10(correction + 1e-10)
+    correction_db = np.clip(correction_db, -max_correction_db, max_correction_db)
+    correction = 10 ** (correction_db / 20)
+
+    from scipy.ndimage import gaussian_filter1d
+    correction = gaussian_filter1d(correction, sigma=5)
+
+    hop = n_fft // 2
+    padded = np.pad(output, (n_fft // 2, n_fft // 2), mode="reflect")
+    window = np.hanning(n_fft + 1)[:n_fft].astype(np.float32)
+    n_frames = 1 + (len(padded) - n_fft) // hop
+
+    frames = np.lib.stride_tricks.as_strided(
+        padded, shape=(n_frames, n_fft),
+        strides=(padded.strides[0] * hop, padded.strides[0]),
+    ).copy()
+    frames *= window
+    spec = np.fft.rfft(frames, n=n_fft)
+    spec *= correction[None, :]
+    corrected_frames = np.fft.irfft(spec, n=n_fft)
+    corrected_frames *= window
+
+    result = np.zeros(len(padded), dtype=np.float32)
+    window_sum = np.zeros(len(padded), dtype=np.float32)
+    for i in range(n_frames):
+        start = i * hop
+        result[start:start + n_fft] += corrected_frames[i]
+        window_sum[start:start + n_fft] += window ** 2
+    window_sum = np.maximum(window_sum, 1e-8)
+    result /= window_sum
+
+    trim = n_fft // 2
+    return result[trim:trim + len(output)].astype(np.float32)
 
 
 def _soft_clip_and_normalize(samples: np.ndarray, target_rms: float) -> np.ndarray:

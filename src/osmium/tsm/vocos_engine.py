@@ -54,7 +54,7 @@ def vocos_variable_rate(
     sample_rate: int = 24000,
     smoothing_sigma: float = 0.7,
 ) -> np.ndarray:
-    from osmium.tsm.smooth import adaptive_smooth_mel
+    from osmium.tsm.smooth import adaptive_smooth_mel, apply_hf_deemphasis
 
     vocos = _load_vocos()
 
@@ -84,14 +84,17 @@ def vocos_variable_rate(
     interp_fn = interp1d(np.arange(T), mel_2d, axis=1, kind="cubic", fill_value="extrapolate")
     resampled = interp_fn(source_indices)
 
+    compression_ratios = np.gradient(source_indices)
+    compression_ratios = np.maximum(compression_ratios, 0.1)
+
     if smoothing_sigma > 0:
-        compression_ratios = np.gradient(source_indices)
-        compression_ratios = np.maximum(compression_ratios, 0.1)
         sigma_min = min(0.3, smoothing_sigma)
         resampled = adaptive_smooth_mel(
             resampled, compression_ratios,
             sigma_min=sigma_min, sigma_max=smoothing_sigma,
         )
+
+    resampled = apply_hf_deemphasis(resampled, compression_ratios)
 
     resampled_tensor = torch.from_numpy(resampled.astype(np.float32)[np.newaxis])
     audio_out = vocos.decode(resampled_tensor)
