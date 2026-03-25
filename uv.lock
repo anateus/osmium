@@ -461,6 +461,18 @@ wheels = [
 ]
 
 [[package]]
+name = "encodec"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "numpy" },
+    { name = "torch" },
+    { name = "torchaudio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/59/e47bbd0542d0e6f4ce9983d5eb458a01d4b42c81e5c410cb9e159b1061ae/encodec-0.1.1.tar.gz", hash = "sha256:36dde98ccfe6c51a15576476cadfcb3b35a63507b8b8555abd69889a6fba6772", size = 3736037, upload-time = "2022-10-25T16:13:21.471Z" }
+
+[[package]]
 name = "filelock"
 version = "3.25.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1427,11 +1439,15 @@ dependencies = [
     { name = "rich" },
     { name = "scipy" },
     { name = "soundfile" },
+    { name = "vocos" },
 ]
 
 [package.optional-dependencies]
 demucs = [
     { name = "demucs" },
+]
+mlx = [
+    { name = "mlx" },
 ]
 neural = [
     { name = "huggingface-hub" },
@@ -1454,6 +1470,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "demucs", marker = "extra == 'demucs'", specifier = ">=4.0" },
     { name = "huggingface-hub", marker = "extra == 'neural'", specifier = ">=0.28" },
+    { name = "mlx", marker = "extra == 'mlx'", specifier = ">=0.10" },
     { name = "moshi-mlx", marker = "extra == 'neural'", specifier = ">=0.3.0" },
     { name = "noisereduce", specifier = ">=3.0" },
     { name = "numpy", specifier = ">=1.24" },
@@ -1462,8 +1479,9 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.11" },
     { name = "soundfile", specifier = ">=0.12" },
     { name = "torchaudio", marker = "extra == 'phoneme'", specifier = ">=2.0" },
+    { name = "vocos", specifier = ">=0.1" },
 ]
-provides-extras = ["neural", "phoneme", "psola", "demucs"]
+provides-extras = ["mlx", "neural", "phoneme", "psola", "demucs"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.2" }]
@@ -2296,6 +2314,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c7/24/5f1b3bdffd70275f6661c76461e25f024d5a38a46f04aaca912426a2b1d3/urllib3-2.6.3.tar.gz", hash = "sha256:1b62b6884944a57dbe321509ab94fd4d3b307075e0c2eae991ac71ee15ad38ed", size = 435556, upload-time = "2026-01-07T16:24:43.925Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/39/08/aaaad47bc4e9dc8c725e68f9d04865dbcb2052843ff09c97b08904852d84/urllib3-2.6.3-py3-none-any.whl", hash = "sha256:bf272323e553dfb2e87d9bfd225ca7b0f467b919d7bbd355436d3fd37cb0acd4", size = 131584, upload-time = "2026-01-07T16:24:42.685Z" },
+]
+
+[[package]]
+name = "vocos"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "encodec" },
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "pyyaml" },
+    { name = "scipy" },
+    { name = "torch" },
+    { name = "torchaudio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/48/1e4d3a4a97292e47ebaa18e3eae6ecb2f57bde47693ccab0e7acb23f9ffe/vocos-0.1.0.tar.gz", hash = "sha256:b488224dbe398ff7d4790a027ad659478b4bc02e465db992c62c12b32ca043d8", size = 21107, upload-time = "2023-10-14T00:57:29.631Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/45/82fe9b5696eb5dd4f84632f75b549b48bed0c33a5920b6309fbafd7e3477/vocos-0.1.0-py3-none-any.whl", hash = "sha256:0ac13eaef68596074301e912d781399b3defa4b4ca60b6bc52c8a4b9209ca235", size = 24085, upload-time = "2023-10-14T00:57:27.972Z" },
 ]
 
 [[package]]

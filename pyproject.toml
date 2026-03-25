@@ -10,9 +10,13 @@ dependencies = [
     "scipy>=1.11",
     "rich>=13.0",
     "noisereduce>=3.0",
+    "vocos>=0.1",
 ]
 
 [project.optional-dependencies]
+mlx = [
+    "mlx>=0.10",
+]
 neural = [
     "moshi_mlx>=0.3.0",
     "huggingface_hub>=0.28",
