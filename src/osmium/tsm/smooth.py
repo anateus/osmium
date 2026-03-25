@@ -64,27 +64,30 @@ def adaptive_smooth_mel(
 def apply_hf_deemphasis(
     mel: np.ndarray,
     compression_ratios: np.ndarray,
-    max_rolloff_db: float = 4.0,
-    hf_start_bin: float = 0.5,
+    max_rolloff_db: float = 5.0,
+    base_rolloff_db: float = 1.0,
+    hf_start_bin: float = 0.4,
 ) -> np.ndarray:
     n_mels, T = mel.shape
-    if T < 2 or max_rolloff_db <= 0:
+    if T < 2 or (max_rolloff_db <= 0 and base_rolloff_db <= 0):
         return mel
-
-    ratio_min = compression_ratios.min()
-    ratio_max = compression_ratios.max()
-    if ratio_max <= ratio_min + 0.1:
-        return mel
-
-    norm_ratios = np.clip(
-        (compression_ratios - ratio_min) / (ratio_max - ratio_min), 0, 1
-    )
 
     start_bin = int(n_mels * hf_start_bin)
     bin_positions = np.linspace(0, 1, n_mels - start_bin)
     rolloff_profile = bin_positions ** 1.5
 
     gain_db = np.zeros((n_mels, T), dtype=np.float32)
-    gain_db[start_bin:, :] = -max_rolloff_db * rolloff_profile[:, None] * norm_ratios[None, :]
+
+    if base_rolloff_db > 0:
+        gain_db[start_bin:, :] -= base_rolloff_db * rolloff_profile[:, None]
+
+    if max_rolloff_db > 0:
+        ratio_min = compression_ratios.min()
+        ratio_max = compression_ratios.max()
+        if ratio_max > ratio_min + 0.1:
+            norm_ratios = np.clip(
+                (compression_ratios - ratio_min) / (ratio_max - ratio_min), 0, 1
+            )
+            gain_db[start_bin:, :] -= max_rolloff_db * rolloff_profile[:, None] * norm_ratios[None, :]
 
     return mel + gain_db

@@ -268,7 +268,7 @@ def _match_spectral_tilt(
     output: np.ndarray,
     sample_rate: int,
     n_fft: int = 2048,
-    max_correction_db: float = 3.0,
+    max_correction_db: float = 4.5,
 ) -> np.ndarray:
     def avg_spectrum(x):
         hop = n_fft // 2
