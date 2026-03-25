@@ -10,7 +10,7 @@ from osmium.io.encode import encode, encode_pcm_stdout
 
 
 @click.command()
-@click.argument("input_file", type=click.Path(exists=True))
+@click.argument("input_files", nargs=-1, required=True, type=click.Path(exists=True))
 @click.option("-s", "--speed", required=True, type=float, help="Target speed factor (e.g., 2.0, 3.5)")
 @click.option("-o", "--output", "output_file", type=click.Path(), help="Output file path")
 @click.option("--stream", is_flag=True, help="Stream raw f32le PCM to stdout")
@@ -25,7 +25,7 @@ from osmium.io.encode import encode, encode_pcm_stdout
               help="Voice cleanup: gate (default), deep (adaptive), demucs (source separation), none (off)")
 @click.option("--rate-gamma", "rate_gamma", type=float, default=1.5,
               help="Rate contrast compression (1.0=linear/off, >1=smoother rhythm)")
-def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma):
+def main(input_files, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -40,24 +40,23 @@ def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoo
         raise click.UsageError("--denoise is not supported with --stream")
 
     if stream:
-        _stream_mode(input_file, speed)
+        for f in input_files:
+            _stream_mode(f, speed)
     else:
-        _batch_mode(input_file, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody, denoise=denoise, rate_gamma=rate_gamma)
+        _batch_mode(input_files, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody, denoise=denoise, rate_gamma=rate_gamma)
 
 
-def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False, denoise=None, rate_gamma=1.5):
+def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False, denoise=None, rate_gamma=1.5):
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
     console = Console(stderr=True)
-    filename = Path(input_file).name
     resolution_s = _parse_resolution(resolution)
 
-    console.print(f"[bold]osmium[/bold] {filename} @ [cyan]{speed}x[/cyan]")
-
     t0 = time.time()
-
-    probe_dur = probe_duration(input_file)
+    all_output = []
+    total_input_duration = 0.0
+    sample_rate = None
 
     with Progress(
         SpinnerColumn(),
@@ -69,120 +68,147 @@ def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, s
         transient=True,
     ) as progress:
 
-        decode_task = progress.add_task("Decoding", total=probe_dur, status="")
-
-        def on_decode_progress(decoded_s):
-            progress.update(decode_task, completed=decoded_s, status=f"{decoded_s:.0f}s")
-
-        if probe_dur and probe_dur > 30:
-            audio = decode(input_file, progress_callback=on_decode_progress)
-        else:
-            audio = decode(input_file)
-
-        duration = len(audio.samples) / audio.sample_rate
-        progress.update(decode_task, completed=duration, total=duration, status=f"{duration:.0f}s")
-        progress.remove_task(decode_task)
-
-        input_rms = np.sqrt(np.mean(audio.samples ** 2))
-
-        if denoise:
-            denoise_task = progress.add_task("Denoising", total=None, status=denoise)
-            audio = type(audio)(samples=_apply_denoise(audio.samples, audio.sample_rate, denoise, console), sample_rate=audio.sample_rate)
-            progress.remove_task(denoise_task)
-
-        rate_curve = None
-        rate_times = None
-
-        if not uniform:
-            from osmium.analyzer.importance import resample_importance
-            from osmium.tsm.rate_schedule import importance_to_rate_schedule
-
-            if use_mimi:
-                imp = _analyze_mimi(audio, progress, console)
+        for file_idx, input_file in enumerate(input_files):
+            filename = Path(input_file).name
+            if len(input_files) > 1:
+                console.print(f"[bold]osmium[/bold] [{file_idx+1}/{len(input_files)}] {filename} @ [cyan]{speed}x[/cyan]")
             else:
-                imp = _analyze_mel(audio, progress)
+                console.print(f"[bold]osmium[/bold] {filename} @ [cyan]{speed}x[/cyan]")
 
-            if use_prosody:
-                from osmium.analyzer.prosody import apply_prosodic_modulation
-                imp = apply_prosodic_modulation(imp, audio.samples, audio.sample_rate)
-
-            imp = resample_importance(imp, resolution_s)
-
+            output_samples, duration, sr = _process_file(
+                input_file, speed, uniform, use_mimi, resolution_s, smoothing,
+                analyze_only, chunk_duration, use_prosody, denoise, rate_gamma,
+                progress, console, output_file,
+            )
             if analyze_only:
-                _write_analysis(imp, resolution_s, duration, output_file, console)
                 return
 
-            rate_curve, rate_times = importance_to_rate_schedule(
-                imp.scores, imp.times, target_speed=speed,
-                gamma=rate_gamma,
-            )
+            all_output.append(output_samples)
+            total_input_duration += duration
+            sample_rate = sr
 
-        use_chunked = chunk_duration > 0 or duration > 600
-        chunk_dur = chunk_duration if chunk_duration > 0 else 300.0
-
-        if use_chunked:
-            n_chunks = max(1, int(np.ceil(duration / chunk_dur)))
-            stretch_task = progress.add_task("Stretching", total=n_chunks, status=f"0/{n_chunks} chunks")
-            from osmium.parallel import process_chunked
-
-            def on_chunk_progress(done, total):
-                progress.update(stretch_task, completed=done, status=f"{done}/{total} chunks")
-
-            output_samples = process_chunked(
-                audio.samples, speed=speed, sample_rate=audio.sample_rate,
-                chunk_duration=chunk_dur,
-                rate_curve=rate_curve, rate_times=rate_times,
-                smoothing=smoothing, on_progress=on_chunk_progress,
-            )
-        else:
-            stretch_task = progress.add_task("Stretching", total=None, status="vocos")
-
-            try:
-                from osmium.tsm.vocos_mlx import vocos_mlx_stretch, vocos_mlx_variable_rate
-                progress.update(stretch_task, status="vocos (mlx)")
-                if rate_curve is not None:
-                    output_samples = vocos_mlx_variable_rate(
-                        audio.samples, rate_curve, rate_times,
-                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                    )
-                else:
-                    output_samples = vocos_mlx_stretch(
-                        audio.samples, speed,
-                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                    )
-            except (ImportError, Exception):
-                from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
-                progress.update(stretch_task, status="vocos (cpu)")
-                if rate_curve is not None:
-                    output_samples = vocos_variable_rate(
-                        audio.samples, rate_curve, rate_times,
-                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                    )
-                else:
-                    output_samples = vocos_stretch(
-                        audio.samples, speed,
-                        sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                    )
-
-        progress.remove_task(stretch_task)
-
-        output_samples = _match_spectral_tilt(audio.samples, output_samples, audio.sample_rate)
-        output_samples = _soft_clip_and_normalize(output_samples, input_rms)
+        combined = np.concatenate(all_output) if len(all_output) > 1 else all_output[0]
 
         if output_file:
             encode_task = progress.add_task("Encoding", total=None, status=Path(output_file).suffix)
-            encode(output_samples, audio.sample_rate, output_file)
+            encode(combined, sample_rate, output_file)
             progress.remove_task(encode_task)
 
-    out_duration = len(output_samples) / audio.sample_rate
+    out_duration = len(combined) / sample_rate
     total_time = time.time() - t0
 
     console.print(
-        f"  [green]done[/green] {duration:.0f}s → {out_duration:.1f}s "
-        f"in {total_time:.1f}s ({duration/total_time:.0f}x realtime)"
+        f"  [green]done[/green] {total_input_duration:.0f}s → {out_duration:.1f}s "
+        f"in {total_time:.1f}s ({total_input_duration/total_time:.0f}x realtime)"
     )
     if output_file:
         console.print(f"  [dim]→ {output_file}[/dim]")
+
+
+def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing, analyze_only, chunk_duration, use_prosody, denoise, rate_gamma, progress, console, output_file):
+    probe_dur = probe_duration(input_file)
+
+    decode_task = progress.add_task("Decoding", total=probe_dur, status="")
+
+    def on_decode_progress(decoded_s):
+        progress.update(decode_task, completed=decoded_s, status=f"{decoded_s:.0f}s")
+
+    if probe_dur and probe_dur > 30:
+        audio = decode(input_file, progress_callback=on_decode_progress)
+    else:
+        audio = decode(input_file)
+
+    duration = len(audio.samples) / audio.sample_rate
+    progress.update(decode_task, completed=duration, total=duration, status=f"{duration:.0f}s")
+    progress.remove_task(decode_task)
+
+    input_rms = np.sqrt(np.mean(audio.samples ** 2))
+
+    if denoise:
+        denoise_task = progress.add_task("Denoising", total=None, status=denoise)
+        audio = type(audio)(samples=_apply_denoise(audio.samples, audio.sample_rate, denoise, console), sample_rate=audio.sample_rate)
+        progress.remove_task(denoise_task)
+
+    rate_curve = None
+    rate_times = None
+
+    if not uniform:
+        from osmium.analyzer.importance import resample_importance
+        from osmium.tsm.rate_schedule import importance_to_rate_schedule
+
+        if use_mimi:
+            imp = _analyze_mimi(audio, progress, console)
+        else:
+            imp = _analyze_mel(audio, progress)
+
+        if use_prosody:
+            from osmium.analyzer.prosody import apply_prosodic_modulation
+            imp = apply_prosodic_modulation(imp, audio.samples, audio.sample_rate)
+
+        imp = resample_importance(imp, resolution_s)
+
+        if analyze_only:
+            _write_analysis(imp, resolution_s, duration, output_file, console)
+            return None, duration, audio.sample_rate
+
+        rate_curve, rate_times = importance_to_rate_schedule(
+            imp.scores, imp.times, target_speed=speed,
+            gamma=rate_gamma,
+        )
+
+    use_chunked = chunk_duration > 0 or duration > 600
+    chunk_dur = chunk_duration if chunk_duration > 0 else 300.0
+
+    if use_chunked:
+        n_chunks = max(1, int(np.ceil(duration / chunk_dur)))
+        stretch_task = progress.add_task("Stretching", total=n_chunks, status=f"0/{n_chunks} chunks")
+        from osmium.parallel import process_chunked
+
+        def on_chunk_progress(done, total):
+            progress.update(stretch_task, completed=done, status=f"{done}/{total} chunks")
+
+        output_samples = process_chunked(
+            audio.samples, speed=speed, sample_rate=audio.sample_rate,
+            chunk_duration=chunk_dur,
+            rate_curve=rate_curve, rate_times=rate_times,
+            smoothing=smoothing, on_progress=on_chunk_progress,
+        )
+    else:
+        stretch_task = progress.add_task("Stretching", total=None, status="vocos")
+
+        try:
+            from osmium.tsm.vocos_mlx import vocos_mlx_stretch, vocos_mlx_variable_rate
+            progress.update(stretch_task, status="vocos (mlx)")
+            if rate_curve is not None:
+                output_samples = vocos_mlx_variable_rate(
+                    audio.samples, rate_curve, rate_times,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
+            else:
+                output_samples = vocos_mlx_stretch(
+                    audio.samples, speed,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
+        except (ImportError, Exception):
+            from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
+            progress.update(stretch_task, status="vocos (cpu)")
+            if rate_curve is not None:
+                output_samples = vocos_variable_rate(
+                    audio.samples, rate_curve, rate_times,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
+            else:
+                output_samples = vocos_stretch(
+                    audio.samples, speed,
+                    sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
+                )
+
+    progress.remove_task(stretch_task)
+
+    output_samples = _match_spectral_tilt(audio.samples, output_samples, audio.sample_rate)
+    output_samples = _soft_clip_and_normalize(output_samples, input_rms)
+
+    return output_samples, duration, audio.sample_rate
 
 
 def _analyze_mel(audio, progress):
