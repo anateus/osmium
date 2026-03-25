@@ -83,6 +83,8 @@ def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, s
         progress.update(decode_task, completed=duration, total=duration, status=f"{duration:.0f}s")
         progress.remove_task(decode_task)
 
+        input_rms = np.sqrt(np.mean(audio.samples ** 2))
+
         if denoise:
             denoise_task = progress.add_task("Denoising", total=None, status=denoise)
             audio = type(audio)(samples=_apply_denoise(audio.samples, audio.sample_rate, denoise, console), sample_rate=audio.sample_rate)
@@ -164,7 +166,6 @@ def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, s
 
         progress.remove_task(stretch_task)
 
-        input_rms = np.sqrt(np.mean(audio.samples ** 2))
         output_samples = _soft_clip_and_normalize(output_samples, input_rms)
 
         if output_file:
