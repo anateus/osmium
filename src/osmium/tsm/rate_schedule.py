@@ -21,6 +21,7 @@ def importance_to_rate_schedule(
     max_rate: float = 10.0,
     smoothing_sigma: float = 15.0,
     max_rate_change: float = 0.3,
+    gamma: float = 1.5,
 ) -> tuple[np.ndarray, np.ndarray]:
     imp = importance.copy()
     imp = np.clip(imp, 0, 1)
@@ -57,6 +58,18 @@ def importance_to_rate_schedule(
         adjustment = current_output / target_output_duration
         rates *= adjustment
         rates = np.clip(rates, min_rate, max_rate)
+
+    if gamma != 1.0:
+        normalized = (rates - min_rate) / (max_rate - min_rate)
+        rates = min_rate + (normalized ** gamma) * (max_rate - min_rate)
+        rates = np.clip(rates, min_rate, max_rate)
+        for _ in range(10):
+            output_durations = dt / rates
+            current_output = output_durations.sum()
+            if abs(current_output - target_output_duration) / target_output_duration < 0.001:
+                break
+            rates *= current_output / target_output_duration
+            rates = np.clip(rates, min_rate, max_rate)
 
     for i in range(1, len(rates)):
         delta = rates[i] - rates[i - 1]
