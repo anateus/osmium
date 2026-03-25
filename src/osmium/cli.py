@@ -17,11 +17,15 @@ from osmium.io.encode import encode, encode_pcm_stdout
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
 @click.option("--uniform", is_flag=True, help="Skip importance analysis, use uniform-rate")
 @click.option("--mimi", is_flag=True, help="Use Mimi neural codec for importance (slower, slightly better)")
-@click.option("--smoothing", default=0.7, type=float, help="Mel temporal smoothing sigma (0=off)")
+@click.option("--smoothing", default=0.7, type=float, help="Mel smoothing sigma; adaptive in variable-rate mode (0=off)")
 @click.option("--chunk-size", "chunk_duration", type=float, default=0, help="Process in chunks of N seconds (lower = less memory, 0 = auto-chunk files >10min at 300s)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
 @click.option("--no-prosody", is_flag=True, help="Disable prosodic envelope (sentence-level rhythm preservation)")
-def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody):
+@click.option("--denoise", type=click.Choice(["gate", "deep", "demucs"]), default=None,
+              help="Voice cleanup: gate (DSP), deep (DeepFilterNet), demucs (source separation)")
+@click.option("--rate-gamma", "rate_gamma", type=float, default=1.5,
+              help="Rate contrast compression (1.0=linear/off, >1=smoother rhythm)")
+def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma):
     """Osmium — high-quality speech acceleration."""
     if not stream and not output_file and not analyze_only:
         raise click.UsageError("Either --output, --stream, or --analyze-only is required")
@@ -29,13 +33,16 @@ def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoo
     if speed <= 0:
         raise click.UsageError("Speed must be positive")
 
+    if stream and denoise:
+        raise click.UsageError("--denoise is not supported with --stream")
+
     if stream:
         _stream_mode(input_file, speed)
     else:
-        _batch_mode(input_file, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody)
+        _batch_mode(input_file, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody, denoise=denoise, rate_gamma=rate_gamma)
 
 
-def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False):
+def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False, denoise=None, rate_gamma=1.5):
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
@@ -73,6 +80,11 @@ def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, s
         progress.update(decode_task, completed=duration, total=duration, status=f"{duration:.0f}s")
         progress.remove_task(decode_task)
 
+        if denoise:
+            denoise_task = progress.add_task("Denoising", total=None, status=denoise)
+            audio = type(audio)(samples=_apply_denoise(audio.samples, audio.sample_rate, denoise, console), sample_rate=audio.sample_rate)
+            progress.remove_task(denoise_task)
+
         rate_curve = None
         rate_times = None
 
@@ -97,6 +109,7 @@ def _batch_mode(input_file, speed, output_file, uniform, use_mimi, resolution, s
 
             rate_curve, rate_times = importance_to_rate_schedule(
                 imp.scores, imp.times, target_speed=speed,
+                gamma=rate_gamma,
             )
 
         use_chunked = chunk_duration > 0 or duration > 600
@@ -227,6 +240,26 @@ def _stream_mode(input_file, speed):
     for output_chunk in process_streaming(chunks, speed=speed, window_size=2048):
         sys.stdout.buffer.write(encode_pcm_stdout(output_chunk))
     click.echo("  stream complete", err=True)
+
+
+def _apply_denoise(samples, sample_rate, method, console):
+    if method == "gate":
+        from osmium.analyzer.denoise import spectral_gate
+        return spectral_gate(samples, sample_rate)
+    elif method == "deep":
+        try:
+            from osmium.analyzer.denoise_deep import deep_filter
+            return deep_filter(samples, sample_rate)
+        except ImportError:
+            console.print("[red]DeepFilterNet requires:[/red] uv pip install -e '.[denoise]'")
+            raise SystemExit(1)
+    elif method == "demucs":
+        try:
+            from osmium.analyzer.denoise_demucs import demucs_separate
+            return demucs_separate(samples, sample_rate)
+        except ImportError:
+            console.print("[red]Demucs requires:[/red] uv pip install -e '.[demucs]'")
+            raise SystemExit(1)
 
 
 def _soft_clip_and_normalize(samples: np.ndarray, target_rms: float) -> np.ndarray:
