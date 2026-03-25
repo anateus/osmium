@@ -21,8 +21,8 @@ from osmium.io.encode import encode, encode_pcm_stdout
 @click.option("--chunk-size", "chunk_duration", type=float, default=0, help="Process in chunks of N seconds (lower = less memory, 0 = auto-chunk files >10min at 300s)")
 @click.option("--analyze-only", is_flag=True, help="Output importance map as JSON")
 @click.option("--no-prosody", is_flag=True, help="Disable prosodic envelope (sentence-level rhythm preservation)")
-@click.option("--denoise", type=click.Choice(["gate", "deep", "demucs"]), default=None,
-              help="Voice cleanup: gate (DSP), deep (DeepFilterNet), demucs (source separation)")
+@click.option("--denoise", type=click.Choice(["gate", "deep", "demucs", "none"]), default="gate",
+              help="Voice cleanup: gate (default), deep (adaptive), demucs (source separation), none (off)")
 @click.option("--rate-gamma", "rate_gamma", type=float, default=1.5,
               help="Rate contrast compression (1.0=linear/off, >1=smoother rhythm)")
 def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma):
@@ -32,6 +32,9 @@ def main(input_file, speed, output_file, stream, resolution, uniform, mimi, smoo
 
     if speed <= 0:
         raise click.UsageError("Speed must be positive")
+
+    if denoise == "none":
+        denoise = None
 
     if stream and denoise:
         raise click.UsageError("--denoise is not supported with --stream")
