@@ -10,6 +10,8 @@ def _load_vocos():
     global _vocos
     if _vocos is not None:
         return _vocos
+    import logging
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
     from vocos import Vocos
     _vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
     return _vocos

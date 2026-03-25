@@ -207,7 +207,7 @@ def _analyze_mimi(audio, progress, console):
             progress.update(task, status="mimi (cpu)")
             codes = mimi_encode(audio.samples, audio.sample_rate)
         except ImportError:
-            console.print("[red]Mimi requires:[/red] uv pip install -e '.[neural]'")
+            console.print("[red]Mimi requires:[/red] uv pip install -e '.\\[neural]'")
             raise SystemExit(1)
 
     imp = compute_importance(codes, audio.samples, audio.sample_rate)
@@ -247,18 +247,14 @@ def _apply_denoise(samples, sample_rate, method, console):
         from osmium.analyzer.denoise import spectral_gate
         return spectral_gate(samples, sample_rate)
     elif method == "deep":
-        try:
-            from osmium.analyzer.denoise_deep import deep_filter
-            return deep_filter(samples, sample_rate)
-        except ImportError:
-            console.print("[red]DeepFilterNet requires:[/red] uv pip install -e '.[denoise]'")
-            raise SystemExit(1)
+        from osmium.analyzer.denoise_deep import deep_filter
+        return deep_filter(samples, sample_rate)
     elif method == "demucs":
         try:
             from osmium.analyzer.denoise_demucs import demucs_separate
             return demucs_separate(samples, sample_rate)
         except ImportError:
-            console.print("[red]Demucs requires:[/red] uv pip install -e '.[demucs]'")
+            console.print("[red]Demucs requires:[/red] uv pip install -e '.\\[demucs]'")
             raise SystemExit(1)
 
 

@@ -5,7 +5,7 @@ CLIPS_DIR="$(cd "$(dirname "$0")/../samples/clips" && pwd)"
 ACCEL_DIR="$CLIPS_DIR/accelerated"
 
 SPEEDS=(2 2.3 2.6 2.8 3 3.2 3.8)
-MODES=(uniform no-mimi neural)
+MODES=(uniform no-mimi neural gate-denoise deep-denoise)
 
 for speed in "${SPEEDS[@]}"; do
     for mode in "${MODES[@]}"; do
@@ -23,13 +23,19 @@ for speed in "${SPEEDS[@]}"; do
 
             flags="-s $speed -o $outfile"
             case "$mode" in
-                uniform) flags="$flags --uniform" ;;
-                no-mimi) ;; # default mel-based mode
-                neural)  flags="$flags --mimi" ;;
+                uniform)       flags="$flags --uniform" ;;
+                no-mimi)       ;;
+                neural)        flags="$flags --mimi" ;;
+                gate-denoise)  flags="$flags --denoise gate" ;;
+                deep-denoise)  flags="$flags --denoise deep" ;;
             esac
 
             echo ">> ${speed}x $mode: $(basename "$wav")"
-            uv run osmium "$wav" $flags
+            if ! uv run osmium "$wav" $flags; then
+                echo "SKIP $mode (dependency not installed or error)"
+                rm -f "$outfile"
+                break
+            fi
         done
     done
 done

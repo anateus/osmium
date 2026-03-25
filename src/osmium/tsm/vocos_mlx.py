@@ -178,6 +178,8 @@ def _load_model() -> VocosMLX:
     if _model is not None:
         return _model
 
+    import logging
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
     from vocos import Vocos
     pt_model = Vocos.from_pretrained("charactr/vocos-mel-24khz")
 
