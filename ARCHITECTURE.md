@@ -35,7 +35,7 @@ Processing runs at 24kHz mono internally because that's what both Mimi and Vocos
 
 ## Stage 0: voice cleanup
 
-`analyzer/denoise.py`, `analyzer/denoise_deep.py`, `analyzer/denoise_demucs.py`
+`analyzer/denoise.py`, `analyzer/denoise_demucs.py`
 
 Runs before importance analysis so the importance map and vocoder both see cleaner input. Three tiers, all using the `--denoise` flag:
 
@@ -81,6 +81,31 @@ The modulation uses a floor of 0.5, so even unstressed consonants keep at least 
 
 Enabled by default. Disable with `--no-prosody`.
 
+### Phoneme-class importance floors (default)
+
+`analyzer/phoneme_class.py`
+
+The mel importance captures spectral change but can't distinguish phoneme types. Sustained fricatives and plosive closures have low spectral flux but are perceptually critical and nearly incompressible (Klatt 1979).
+
+MMS_FA (torchaudio's forced alignment model, used for its CTC emissions only) classifies each frame into a phoneme class based on the most probable non-blank emission label. Each class has a literature-derived importance floor:
+
+- **plosive** (0.92): stop bursts/closures are near-incompressible
+- **fricative** (0.85): frication noise needs minimum duration
+- **nasal** (0.78): less compressible than vowels
+- **liquid/glide** (0.65): moderate compressibility
+- **vowel** (0.25): most compressible speech segment
+- **silence** (0.05): pauses compress first and most
+
+The floor is applied after mel importance and prosodic modulation via `max(importance, phoneme_floor)`, guaranteeing consonant frames never drop below their class minimum regardless of prosodic context.
+
+Enabled by default. Disable with `--no-phoneme`.
+
+### Phoneme-aligned importance (optional, `--phoneme-align`)
+
+`analyzer/phoneme_align.py`
+
+For maximum precision, Whisper generates a transcript and MMS_FA force-aligns it to get exact phoneme boundaries and identities. The same class-to-floor table is applied per-segment. More accurate than CTC emission classification (catches plosive closures that CTC sees as silence) but adds a Whisper dependency and ~2-3x analysis time.
+
 ## Stage 2: rate schedule
 
 `tsm/rate_schedule.py`
@@ -116,15 +141,19 @@ The MLX implementation (`vocos_mlx.py`) ports the ConvNeXt backbone and ISTFT he
 
 ### Why not the classical approaches
 
-Each of these was implemented, ABX-tested, and found wanting.
+Each of these was implemented, ABX-tested, and removed from the codebase. They're documented here so we don't repeat the experiments.
 
-The **phase vocoder** (`tsm/phase_vocoder.py`) uses identity phase locking (Laroche & Dolson 1999), transient preservation, and noise-band randomization for sibilants. It's decent up to about 3x but sibilants get metallic and vowels pick up a "phasey" quality at higher ratios. Still the fallback when Vocos isn't available.
+The **phase vocoder** used identity phase locking (Laroche & Dolson 1999), transient preservation, and noise-band randomization for sibilants. Decent up to about 3x but sibilants get metallic and vowels pick up a "phasey" quality at higher ratios.
 
-**TD-PSOLA** (`tsm/td_psola.py`) does pitch-synchronous overlap-add using CREPE pitch detection with glottal closure instant (GCI) refinement. Works well on voiced segments but falls apart on unvoiced consonants (t, k, s, f) where pitch detection is meaningless. The result sounds scrambled on exactly the segments you most want to protect.
+**TD-PSOLA** did pitch-synchronous overlap-add using CREPE pitch detection (ported to MLX) with glottal closure instant (GCI) refinement. Works well on voiced segments but falls apart on unvoiced consonants (t, k, s, f) where pitch detection is meaningless. The result sounds scrambled on exactly the segments you most want to protect.
 
-The **CREPE hybrid** (`tsm/crepe_hybrid.py`) routes voiced segments to PSOLA and unvoiced to phase vocoder with 20ms crossfades. Marginally better than phase vocoder alone, but the voicing boundaries introduce subtle clicks. ABX testing slightly favored the plain phase vocoder.
+The **CREPE hybrid** routed voiced segments to PSOLA and unvoiced to phase vocoder with 20ms crossfades. Marginally better than phase vocoder alone, but the voicing boundaries introduce subtle clicks. ABX testing slightly favored the plain phase vocoder.
 
-**HPSS** (`tsm/hpss.py`) separates the signal into harmonic (vowels) and percussive (consonants) components, stretches them independently, and recombines. The problem is timing: the two streams drift apart during stretching, creating discontinuities when you put them back together. Kept as opt-in but not recommended.
+**CREPE-enhanced phase vocoder** used CREPE pitch tracking to improve phase locking in the phase vocoder. Marginal gains over the plain phase vocoder, not enough to justify the CREPE dependency.
+
+**WSOLA** (waveform similarity overlap-add) selects overlap positions by maximizing cross-correlation. Avoids phase issues but produces audible echoing at high ratios because the similarity search locks onto the wrong pitch periods.
+
+**HPSS** (harmonic-percussive source separation) separated the signal into harmonic (vowels) and percussive (consonants) components, stretched them independently, and recombined. The problem is timing: the two streams drift apart during stretching, creating discontinuities when you put them back together.
 
 ## Post-processing
 
@@ -148,8 +177,6 @@ Files over 10 minutes get auto-chunked into 300-second segments with 1-second ov
 
 Decode and encode both shell out to ffmpeg. Decode resamples to 24kHz mono float32. Encode writes whatever format the output extension implies. For large files (>30s), decoding shows a progress bar based on `ffprobe` duration.
 
-Streaming mode (`--stream`) outputs raw f32le PCM to stdout for piping to ffplay or further processing.
-
 ## Module map
 
 ```
@@ -160,28 +187,17 @@ src/osmium/
 │   ├── importance.py       Mimi-based importance + ImportanceMap dataclass
 │   ├── mel_importance.py   mel spectral flux + energy importance
 │   ├── prosody.py          prosodic envelope extraction and modulation
+│   ├── phoneme_class.py    MMS_FA phoneme class detection + importance floors
+│   ├── phoneme_align.py    forced alignment phoneme importance (Whisper + MMS_FA)
 │   ├── denoise.py          spectral gating via noisereduce (gate/deep modes)
-│   ├── denoise_deep.py     non-stationary noisereduce wrapper
 │   ├── denoise_demucs.py   Demucs HTDemucs source separation wrapper
 │   ├── mimi.py             Mimi encoder (rustymimi)
-│   ├── mimi_mlx.py         Mimi encoder (MLX, ~500x realtime)
-│   ├── crepe_mlx.py        CREPE pitch detection (MLX)
-│   ├── gci.py              glottal closure instant detection
-│   └── aligner.py          phoneme alignment via torchaudio MMS_FA
+│   └── mimi_mlx.py         Mimi encoder (MLX, ~500x realtime)
 ├── tsm/
 │   ├── vocos_mlx.py        Vocos vocoder (MLX) + mel extraction
 │   ├── vocos_engine.py     Vocos vocoder (PyTorch fallback)
 │   ├── smooth.py           adaptive mel smoothing + HF de-emphasis
-│   ├── rate_schedule.py    importance → rate curve with gamma compression
-│   ├── phase_vocoder.py    phase vocoder with identity phase locking
-│   ├── td_psola.py         time-domain PSOLA
-│   ├── crepe_hybrid.py     PSOLA/PV hybrid with voicing segmentation
-│   ├── crepe_enhanced_pv.py CREPE-guided phase vocoder
-│   ├── voiced_split.py     voicing segmentation
-│   ├── hybrid.py           earlier HPSS-based hybrid
-│   ├── hpss.py             harmonic-percussive separation
-│   ├── wsola.py            waveform similarity OLA
-│   └── stream.py           streaming processor
+│   └── rate_schedule.py    importance → rate curve with gamma compression
 └── io/
     ├── decode.py           ffmpeg decode to 24kHz mono
     └── encode.py           ffmpeg encode to mp3/m4a/wav/flac
