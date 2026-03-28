@@ -156,6 +156,20 @@ def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing,
                 duration=imp.duration,
             )
 
+        if phoneme_align:
+            from osmium.analyzer.phoneme_align import analyze_phoneme_aligned
+            from osmium.analyzer.importance import ImportanceMap
+            align_task = progress.add_task("Analyzing", total=None, status="forced alignment")
+            aligned_imp = analyze_phoneme_aligned(audio.samples, audio.sample_rate)
+            progress.remove_task(align_task)
+            aligned_resampled = np.interp(imp.times, aligned_imp.times, aligned_imp.scores)
+            imp = ImportanceMap(
+                scores=np.maximum(imp.scores, aligned_resampled),
+                times=imp.times,
+                frame_rate=imp.frame_rate,
+                duration=imp.duration,
+            )
+
         imp = resample_importance(imp, resolution_s)
 
         if analyze_only:
