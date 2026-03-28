@@ -247,13 +247,14 @@ def vocos_mlx_stretch(
 
     model = _load_model()
     mel = extract_mel(samples, sample_rate)
+    mel = gaussian_filter1d(mel, sigma=2.0, axis=1)
 
     T = mel.shape[1]
     target_T = max(1, int(T / speed))
 
     source_t = np.arange(T)
     target_t = np.linspace(0, T - 1, target_T)
-    interp_fn = interp1d(source_t, mel, axis=1, kind="cubic")
+    interp_fn = interp1d(source_t, mel, axis=1, kind="linear")
     resampled = interp_fn(target_t)
 
     if smoothing_sigma > 0:
@@ -274,6 +275,7 @@ def vocos_mlx_variable_rate(
     smoothing_sigma: float = 0.7,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
+    from scipy.ndimage import gaussian_filter1d
     from osmium.tsm.smooth import adaptive_smooth_mel, apply_hf_deemphasis
 
     model = _load_model()
@@ -296,7 +298,9 @@ def vocos_mlx_variable_rate(
     target_mel_times = np.linspace(0, total_output_duration, target_T)
     source_indices = np.interp(target_mel_times, output_times, np.arange(T))
 
-    interp_fn = interp1d(np.arange(T), mel, axis=1, kind="cubic", fill_value="extrapolate")
+    mel = gaussian_filter1d(mel, sigma=2.0, axis=1)
+
+    interp_fn = interp1d(np.arange(T), mel, axis=1, kind="linear", fill_value="extrapolate")
     resampled = interp_fn(source_indices)
 
     compression_ratios = np.gradient(source_indices)
@@ -306,7 +310,7 @@ def vocos_mlx_variable_rate(
         sigma_min = min(0.3, smoothing_sigma)
         resampled = adaptive_smooth_mel(
             resampled, compression_ratios,
-            sigma_min=sigma_min, sigma_max=smoothing_sigma,
+            sigma_min=sigma_min, sigma_max=max(smoothing_sigma, 2.0),
         )
 
     resampled = apply_hf_deemphasis(resampled, compression_ratios)
