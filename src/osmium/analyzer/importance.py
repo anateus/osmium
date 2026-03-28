@@ -54,6 +54,9 @@ def _mimi_importance(
         + weight_multi_cb * multi_cb_change
     )
 
+    i_min, i_max = importance.min(), importance.max()
+    if i_max > i_min:
+        importance = (importance - i_min) / (i_max - i_min)
     importance = np.clip(importance, 0.0, 1.0)
     times = np.arange(n_frames) / codes.frame_rate
 
