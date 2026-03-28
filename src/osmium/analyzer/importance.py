@@ -15,30 +15,8 @@ def compute_importance(
     codes: MimiCodes,
     samples: np.ndarray,
     sample_rate: int = 24000,
-    use_phoneme_alignment: bool = False,
-    weight_mimi: float = 0.5,
-    weight_phoneme: float = 0.5,
 ) -> ImportanceMap:
-    mimi_imp = _mimi_importance(codes, samples)
-
-    if use_phoneme_alignment:
-        from osmium.analyzer.aligner import compute_phoneme_importance
-        phoneme_imp = compute_phoneme_importance(samples, sample_rate)
-
-        out_times = mimi_imp.times
-        phoneme_resampled = np.interp(out_times, phoneme_imp.times, phoneme_imp.scores)
-
-        combined = weight_mimi * mimi_imp.scores + weight_phoneme * phoneme_resampled
-        combined = np.clip(combined, 0.0, 1.0)
-
-        return ImportanceMap(
-            scores=combined,
-            times=out_times,
-            frame_rate=mimi_imp.frame_rate,
-            duration=mimi_imp.duration,
-        )
-
-    return mimi_imp
+    return _mimi_importance(codes, samples)
 
 
 def _mimi_importance(
