@@ -30,6 +30,9 @@ def compute_mel_importance(
         energy = np.zeros(T)
 
     scores = weight_flux * flux + weight_energy * energy
+    s_min, s_max = scores.min(), scores.max()
+    if s_max > s_min:
+        scores = (scores - s_min) / (s_max - s_min)
     scores = np.clip(scores, 0.0, 1.0)
     times = np.linspace(0, duration, T)
 
