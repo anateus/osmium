@@ -5,15 +5,14 @@ import click
 import numpy as np
 from pathlib import Path
 
-from osmium.io.decode import decode, decode_streaming, probe_duration
-from osmium.io.encode import encode, encode_pcm_stdout
+from osmium.io.decode import decode, probe_duration
+from osmium.io.encode import encode
 
 
 @click.command()
 @click.argument("input_files", nargs=-1, required=True, type=click.Path(exists=True))
 @click.option("-s", "--speed", required=True, type=float, help="Target speed factor (e.g., 2.0, 3.5)")
 @click.option("-o", "--output", "output_file", type=click.Path(), help="Output file path")
-@click.option("--stream", is_flag=True, help="Stream raw f32le PCM to stdout")
 @click.option("--resolution", default="20ms", help="Importance map resolution (e.g., 10ms, 20ms, 80ms)")
 @click.option("--uniform", is_flag=True, help="Skip importance analysis, use uniform-rate")
 @click.option("--mimi", is_flag=True, help="Use Mimi neural codec for importance (slower, slightly better)")
@@ -25,28 +24,26 @@ from osmium.io.encode import encode, encode_pcm_stdout
               help="Voice cleanup: gate (default), deep (adaptive), demucs (source separation), none (off)")
 @click.option("--rate-gamma", "rate_gamma", type=float, default=1.5,
               help="Rate contrast compression (1.0=linear/off, >1=smoother rhythm)")
-def main(input_files, speed, output_file, stream, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma):
+@click.option("--no-phoneme", is_flag=True, help="Disable phoneme-class importance floors")
+@click.option("--phoneme-align", is_flag=True, help="Use forced alignment for precise phoneme boundaries (requires whisper)")
+def main(input_files, speed, output_file, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma, no_phoneme, phoneme_align):
     """Osmium — high-quality speech acceleration."""
-    if not stream and not output_file and not analyze_only:
-        raise click.UsageError("Either --output, --stream, or --analyze-only is required")
+    if not output_file and not analyze_only:
+        raise click.UsageError("Either --output or --analyze-only is required")
 
     if speed <= 0:
         raise click.UsageError("Speed must be positive")
 
+    if phoneme_align and uniform:
+        raise click.UsageError("--phoneme-align cannot be combined with --uniform")
+
     if denoise == "none":
         denoise = None
 
-    if stream and denoise:
-        raise click.UsageError("--denoise is not supported with --stream")
-
-    if stream:
-        for f in input_files:
-            _stream_mode(f, speed)
-    else:
-        _batch_mode(input_files, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody, denoise=denoise, rate_gamma=rate_gamma)
+    _batch_mode(input_files, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody, denoise=denoise, rate_gamma=rate_gamma, no_phoneme=no_phoneme, phoneme_align=phoneme_align)
 
 
-def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False, denoise=None, rate_gamma=1.5):
+def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False, denoise=None, rate_gamma=1.5, no_phoneme=False, phoneme_align=False):
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
@@ -78,7 +75,7 @@ def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, 
             output_samples, duration, sr = _process_file(
                 input_file, speed, uniform, use_mimi, resolution_s, smoothing,
                 analyze_only, chunk_duration, use_prosody, denoise, rate_gamma,
-                progress, console, output_file,
+                progress, console, output_file, no_phoneme, phoneme_align,
             )
             if analyze_only:
                 return
@@ -105,7 +102,7 @@ def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, 
         console.print(f"  [dim]→ {output_file}[/dim]")
 
 
-def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing, analyze_only, chunk_duration, use_prosody, denoise, rate_gamma, progress, console, output_file):
+def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing, analyze_only, chunk_duration, use_prosody, denoise, rate_gamma, progress, console, output_file, no_phoneme=False, phoneme_align=False):
     probe_dur = probe_duration(input_file)
 
     decode_task = progress.add_task("Decoding", total=probe_dur, status="")
@@ -144,6 +141,20 @@ def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing,
         if use_prosody:
             from osmium.analyzer.prosody import apply_prosodic_modulation
             imp = apply_prosodic_modulation(imp, audio.samples, audio.sample_rate)
+
+        if not no_phoneme and not phoneme_align:
+            from osmium.analyzer.phoneme_class import analyze_phoneme_class
+            from osmium.analyzer.importance import ImportanceMap
+            phoneme_task = progress.add_task("Analyzing", total=None, status="phoneme class")
+            phoneme_floors = analyze_phoneme_class(audio.samples, audio.sample_rate)
+            progress.remove_task(phoneme_task)
+            phoneme_resampled = np.interp(imp.times, phoneme_floors.times, phoneme_floors.scores)
+            imp = ImportanceMap(
+                scores=np.maximum(imp.scores, phoneme_resampled),
+                times=imp.times,
+                frame_rate=imp.frame_rate,
+                duration=imp.duration,
+            )
 
         imp = resample_importance(imp, resolution_s)
 
@@ -262,15 +273,6 @@ def _write_analysis(imp, resolution_s, duration, output_file, console):
         with open(out, "w") as f:
             json.dump(result, f, indent=2)
         console.print(f"  wrote importance map to {out}")
-
-
-def _stream_mode(input_file, speed):
-    from osmium.tsm.stream import process_streaming
-    click.echo("  streaming mode (f32le mono 24kHz)...", err=True)
-    chunks = decode_streaming(input_file, chunk_seconds=5.0)
-    for output_chunk in process_streaming(chunks, speed=speed, window_size=2048):
-        sys.stdout.buffer.write(encode_pcm_stdout(output_chunk))
-    click.echo("  stream complete", err=True)
 
 
 def _apply_denoise(samples, sample_rate, method, console):
