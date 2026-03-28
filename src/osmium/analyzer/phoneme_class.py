@@ -18,12 +18,12 @@ LABEL_TO_CLASS = {
 }
 
 PHONEME_CLASS_FLOORS = {
-    "plosive": 0.92,
-    "fricative": 0.85,
-    "nasal": 0.78,
-    "liquid_glide": 0.65,
-    "vowel": 0.25,
-    "silence": 0.05,
+    "plosive": 0.50,
+    "fricative": 0.42,
+    "nasal": 0.35,
+    "liquid_glide": 0.25,
+    "vowel": 0.10,
+    "silence": 0.02,
 }
 
 

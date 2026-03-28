@@ -94,7 +94,7 @@ def test_compute_phoneme_floors_returns_importance_map():
     assert isinstance(result, ImportanceMap)
     assert len(result.scores) == n_frames
     assert result.duration == 2.0
-    np.testing.assert_allclose(result.scores, 0.05, atol=1e-6)
+    np.testing.assert_allclose(result.scores, PHONEME_CLASS_FLOORS["silence"], atol=1e-6)
 
 
 def test_compute_phoneme_floors_plosive_frames():
@@ -106,7 +106,7 @@ def test_compute_phoneme_floors_plosive_frames():
     log_probs[:, 0] = np.log(0.1)
     log_probs[:, t_idx] = np.log(0.7)
     result = compute_phoneme_floors(log_probs, duration=1.0)
-    np.testing.assert_allclose(result.scores, 0.92, atol=1e-6)
+    np.testing.assert_allclose(result.scores, PHONEME_CLASS_FLOORS["plosive"], atol=1e-6)
 
 
 def test_compute_phoneme_floors_mixed():
@@ -121,8 +121,8 @@ def test_compute_phoneme_floors_mixed():
     log_probs[10:, 0] = np.log(0.1)
     log_probs[10:, t_idx] = np.log(0.7)
     result = compute_phoneme_floors(log_probs, duration=0.4)
-    np.testing.assert_allclose(result.scores[:10], 0.25, atol=1e-6)
-    np.testing.assert_allclose(result.scores[10:], 0.92, atol=1e-6)
+    np.testing.assert_allclose(result.scores[:10], PHONEME_CLASS_FLOORS["vowel"], atol=1e-6)
+    np.testing.assert_allclose(result.scores[10:], PHONEME_CLASS_FLOORS["plosive"], atol=1e-6)
 
 
 def test_compute_phoneme_floors_zero_duration():
@@ -137,4 +137,4 @@ def test_compute_phoneme_floors_single_frame():
     log_probs[0, 0] = np.log(0.95)
     result = compute_phoneme_floors(log_probs, duration=0.02)
     assert len(result.scores) == 1
-    assert result.scores[0] == 0.05
+    assert result.scores[0] == PHONEME_CLASS_FLOORS["silence"]
