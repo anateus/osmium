@@ -3,7 +3,9 @@ from osmium.analyzer.phoneme_class import (
     PHONEME_CLASS_FLOORS,
     LABEL_TO_CLASS,
     classify_frame,
+    compute_phoneme_floors,
 )
+from osmium.analyzer.importance import ImportanceMap
 
 
 def test_all_mms_fa_labels_are_mapped():
@@ -81,3 +83,58 @@ def test_classify_frame_vowel():
     log_probs[a_idx] = np.log(0.6)
     cls = classify_frame(log_probs, blank_threshold=0.8)
     assert cls == "vowel"
+
+
+def test_compute_phoneme_floors_returns_importance_map():
+    n_frames = 100
+    n_labels = 29
+    log_probs = np.full((n_frames, n_labels), -10.0, dtype=np.float32)
+    log_probs[:, 0] = np.log(0.95)
+    result = compute_phoneme_floors(log_probs, duration=2.0)
+    assert isinstance(result, ImportanceMap)
+    assert len(result.scores) == n_frames
+    assert result.duration == 2.0
+    np.testing.assert_allclose(result.scores, 0.05, atol=1e-6)
+
+
+def test_compute_phoneme_floors_plosive_frames():
+    n_frames = 50
+    n_labels = 29
+    labels = list("-aienuotsrmkldghybpwcvjzf'qx*")
+    t_idx = labels.index("t")
+    log_probs = np.full((n_frames, n_labels), -10.0, dtype=np.float32)
+    log_probs[:, 0] = np.log(0.1)
+    log_probs[:, t_idx] = np.log(0.7)
+    result = compute_phoneme_floors(log_probs, duration=1.0)
+    np.testing.assert_allclose(result.scores, 0.92, atol=1e-6)
+
+
+def test_compute_phoneme_floors_mixed():
+    n_frames = 20
+    n_labels = 29
+    labels = list("-aienuotsrmkldghybpwcvjzf'qx*")
+    a_idx = labels.index("a")
+    t_idx = labels.index("t")
+    log_probs = np.full((n_frames, n_labels), -10.0, dtype=np.float32)
+    log_probs[:10, 0] = np.log(0.1)
+    log_probs[:10, a_idx] = np.log(0.7)
+    log_probs[10:, 0] = np.log(0.1)
+    log_probs[10:, t_idx] = np.log(0.7)
+    result = compute_phoneme_floors(log_probs, duration=0.4)
+    np.testing.assert_allclose(result.scores[:10], 0.25, atol=1e-6)
+    np.testing.assert_allclose(result.scores[10:], 0.92, atol=1e-6)
+
+
+def test_compute_phoneme_floors_zero_duration():
+    log_probs = np.zeros((0, 29), dtype=np.float32)
+    result = compute_phoneme_floors(log_probs, duration=0.0)
+    assert len(result.scores) == 0
+
+
+def test_compute_phoneme_floors_single_frame():
+    n_labels = 29
+    log_probs = np.full((1, n_labels), -10.0, dtype=np.float32)
+    log_probs[0, 0] = np.log(0.95)
+    result = compute_phoneme_floors(log_probs, duration=0.02)
+    assert len(result.scores) == 1
+    assert result.scores[0] == 0.05

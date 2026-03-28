@@ -1,4 +1,5 @@
 import numpy as np
+from osmium.analyzer.importance import ImportanceMap
 
 MMS_FA_LABELS = list("-aienuotsrmkldghybpwcvjzf'qx*")
 
@@ -37,3 +38,66 @@ def classify_frame(
     best_idx = int(np.argmax(non_blank_probs))
     label = MMS_FA_LABELS[best_idx + 1]
     return LABEL_TO_CLASS.get(label, "plosive")
+
+
+def compute_phoneme_floors(
+    log_probs: np.ndarray,
+    duration: float,
+    blank_threshold: float = 0.8,
+) -> ImportanceMap:
+    n_frames = log_probs.shape[0]
+    if n_frames == 0 or duration <= 0:
+        return ImportanceMap(
+            scores=np.array([], dtype=np.float32),
+            times=np.array([], dtype=np.float32),
+            frame_rate=0.0,
+            duration=max(duration, 0.0),
+        )
+    floors = np.empty(n_frames, dtype=np.float32)
+    for i in range(n_frames):
+        cls = classify_frame(log_probs[i], blank_threshold)
+        floors[i] = PHONEME_CLASS_FLOORS[cls]
+    times = np.linspace(0, duration, n_frames)
+    return ImportanceMap(
+        scores=floors,
+        times=times,
+        frame_rate=n_frames / duration,
+        duration=duration,
+    )
+
+
+_model = None
+
+
+def _load_model():
+    global _model
+    if _model is not None:
+        return _model
+    import torch
+    from torchaudio.pipelines import MMS_FA as bundle
+    _model = bundle.get_model()
+    _model.eval()
+    return _model
+
+
+def analyze_phoneme_class(
+    samples: np.ndarray,
+    sample_rate: int = 24000,
+    blank_threshold: float = 0.8,
+) -> ImportanceMap:
+    import torch
+    import torchaudio
+
+    model = _load_model()
+    duration = len(samples) / sample_rate
+    target_sr = 16000
+
+    waveform = torch.tensor(samples, dtype=torch.float32).unsqueeze(0)
+    if sample_rate != target_sr:
+        waveform = torchaudio.functional.resample(waveform, sample_rate, target_sr)
+
+    with torch.no_grad():
+        emission, _ = model(waveform)
+
+    log_probs = emission[0].numpy()
+    return compute_phoneme_floors(log_probs, duration, blank_threshold)
