@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+from pathlib import Path
 
 import pytorch_lightning as pl
 import torch
@@ -234,6 +235,42 @@ class QualityGateCallback(pl.Callback):
             print(f"WARNING: mel loss {val:.4f} regressed beyond 110% of baseline {self._baseline_mel_loss:.4f}")
 
 
+class EvalSampleCallback(pl.Callback):
+    def __init__(self, val_filelist, output_base, every_n_steps=2000):
+        self.val_filelist = val_filelist
+        self.output_base = Path(output_base)
+        self.every_n_steps = every_n_steps
+        self._last_step = -1
+
+    def on_validation_end(self, trainer, pl_module):
+        step = pl_module.global_step
+        if step == self._last_step or step % self.every_n_steps != 0 or step == 0:
+            return
+        self._last_step = step
+
+        output_dir = self.output_base / f"step_{step}"
+        if output_dir.exists():
+            return
+
+        print(f"\n==> Generating A/B samples at step {step}")
+
+        ckpt_path = self.output_base / f"_tmp_eval_step_{step}.ckpt"
+        trainer.save_checkpoint(str(ckpt_path))
+
+        try:
+            from scripts.vocos_finetune.evaluate import generate_samples
+            generate_samples(
+                checkpoint_path=ckpt_path,
+                val_filelist=self.val_filelist,
+                output_dir=output_dir,
+                n_utterances=5,
+            )
+        except Exception as e:
+            print(f"Warning: eval sample generation failed at step {step}: {e}")
+        finally:
+            ckpt_path.unlink(missing_ok=True)
+
+
 def create_model(
     pretrain_mel_steps: int = 0,
     initial_learning_rate: float = 2e-5,
@@ -313,13 +350,18 @@ def main():
         if os.path.exists(last_ckpt):
             resume_path = last_ckpt
 
+    eval_callback = EvalSampleCallback(
+        val_filelist=args.val_filelist,
+        output_base=Path("training/eval_samples"),
+    )
+
     trainer = pl.Trainer(
         accelerator="mps",
         devices=1,
         max_steps=args.max_steps,
         val_check_interval=2000,
         gradient_clip_val=1.0,
-        callbacks=[checkpoint_callback, QualityGateCallback()],
+        callbacks=[checkpoint_callback, QualityGateCallback(), eval_callback],
         logger=logger,
     )
 
