@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 
 URL = "https://www.openslr.org/resources/60/train-clean-100.tar.gz"
-MD5 = "29c6aa849b4f3412a9ad0f400176a988"
+MD5 = "4a8c202b78fe1bc0c47916a98f3a2ea8"
 ARCHIVE_NAME = "train-clean-100.tar.gz"
 EXTRACT_SUBDIR = "LibriTTS/train-clean-100"
 VAL_SIZE = 200
@@ -58,10 +58,8 @@ def main() -> None:
     print("Verifying MD5 checksum...")
     actual = md5_file(archive_path)
     if actual != MD5:
-        print(f"  WARNING: MD5 mismatch (expected {MD5}, got {actual})")
-        print("  File may be corrupted. Continuing with extraction attempt...")
-    else:
-        print("  Checksum OK")
+        raise ValueError(f"MD5 mismatch: expected {MD5}, got {actual}")
+    print("  Checksum OK")
 
     if not extract_dir.exists():
         print(f"Extracting to {data_dir / 'LibriTTS'} ...")
