@@ -2,6 +2,35 @@ import numpy as np
 import pytest
 
 
+def test_spectral_transient_detects_impulse():
+    """A single-sample impulse should register as a transient click."""
+    from scripts.vocos_finetune.click_detector import spectral_transient_clicks
+    sr = 24000
+    audio = np.zeros(sr, dtype=np.float32)
+    audio[sr // 2] = 1.0
+    clicks = spectral_transient_clicks(audio, sample_rate=sr)
+    assert clicks >= 1
+
+
+def test_spectral_transient_silent_audio():
+    """Silent audio should have zero transient clicks."""
+    from scripts.vocos_finetune.click_detector import spectral_transient_clicks
+    sr = 24000
+    audio = np.zeros(sr, dtype=np.float32)
+    clicks = spectral_transient_clicks(audio, sample_rate=sr)
+    assert clicks == 0
+
+
+def test_spectral_transient_smooth_sine():
+    """A smooth sine wave should have zero transient clicks."""
+    from scripts.vocos_finetune.click_detector import spectral_transient_clicks
+    sr = 24000
+    t = np.linspace(0, 1.0, sr, dtype=np.float32)
+    audio = 0.5 * np.sin(2 * np.pi * 440 * t)
+    clicks = spectral_transient_clicks(audio, sample_rate=sr)
+    assert clicks == 0
+
+
 def test_clean_audio_has_no_clicks():
     from scripts.vocos_finetune.click_detector import count_clicks
     t = np.linspace(0, 1, 24000, dtype=np.float32)
