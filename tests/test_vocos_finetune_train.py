@@ -42,3 +42,18 @@ def test_aug_ratio_ramp():
     assert abs(compute_aug_ratio(3000) - 0.4) < 1e-6
     assert abs(compute_aug_ratio(4000) - 0.5) < 1e-6
     assert abs(compute_aug_ratio(8000) - 0.5) < 1e-6
+
+
+def test_validation_step_returns_separate_metrics(dummy_audio_batch):
+    from scripts.vocos_finetune.train import create_model
+    model = create_model(pretrain_mel_steps=0, initial_learning_rate=1e-4, max_steps=100)
+    model.eval()
+    with torch.no_grad():
+        result = model.validation_step(dummy_audio_batch, batch_idx=0)
+    assert "mel_loss_normal" in result
+    assert "mel_loss_augmented" in result
+    assert "mel_loss_2_0x" in result
+    assert "mel_loss_3_0x" in result
+    assert "mel_loss_4_0x" in result
+    assert "click_rate_2_0x" in result
+    assert isinstance(result["mel_loss_normal"], torch.Tensor)

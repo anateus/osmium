@@ -37,10 +37,11 @@ class VocosFineTuneExp(VocosExp):
         return features
 
     def _forward_with_augment(self, audio_input, **kwargs):
+        T = audio_input.shape[-1]
         features = self.feature_extractor(audio_input, **kwargs)
         features = self._maybe_augment(features)
         x = self.backbone(features, **kwargs)
-        audio_output = self.head(x)
+        audio_output = self.head(x)[..., :T]
         return audio_output
 
     def training_step(self, batch, batch_idx, optimizer_idx, **kwargs):
@@ -142,13 +143,88 @@ class VocosFineTuneExp(VocosExp):
         super().on_train_batch_start(*args)
         self.aug_ratio = compute_aug_ratio(self.global_step)
 
+    def validation_step(self, batch, batch_idx, **kwargs):
+        audio_input = batch
+        from scripts.vocos_finetune.augment import resample_roundtrip
+        from scripts.vocos_finetune.click_detector import clicks_per_second
+        import numpy as np
+
+        T = audio_input.shape[-1]
+        features_normal = self.feature_extractor(audio_input)
+        x_normal = self.backbone(features_normal)
+        audio_hat_normal = self.head(x_normal)[..., :T]
+        mel_loss_normal = self.melspec_loss(audio_hat_normal, audio_input)
+
+        result = {
+            "val_loss": mel_loss_normal,
+            "mel_loss_normal": mel_loss_normal,
+            "audio_input": audio_input[0],
+            "audio_pred_normal": audio_hat_normal[0],
+        }
+
+        mel_losses_aug = []
+        for rate in [2.0, 3.0, 4.0]:
+            features_aug = resample_roundtrip(features_normal.clone(), rate=rate, presmooth_sigma=2.0)
+            x_aug = self.backbone(features_aug)
+            audio_hat_aug = self.head(x_aug)[..., :T]
+            mel_loss_aug = self.melspec_loss(audio_hat_aug, audio_input)
+            mel_losses_aug.append(mel_loss_aug)
+
+            audio_np = audio_hat_aug[0].detach().cpu().numpy()
+            click_rate = clicks_per_second(audio_np, sample_rate=self.hparams.sample_rate)
+
+            rate_key = f"{rate}x".replace(".", "_")
+            result[f"mel_loss_{rate_key}"] = mel_loss_aug
+            result[f"click_rate_{rate_key}"] = torch.tensor(click_rate)
+
+        avg_aug_loss = torch.stack(mel_losses_aug).mean()
+        composite = 0.5 * mel_loss_normal + 0.5 * avg_aug_loss
+        result["mel_loss_augmented"] = avg_aug_loss
+        result["val_loss"] = composite
+
+        self.log("val/mel_loss_normal", mel_loss_normal, prog_bar=True)
+        self.log("val/mel_loss_augmented", avg_aug_loss, prog_bar=True)
+        self.log("val/composite_loss", composite, prog_bar=True)
+
+        return result
+
+    def validation_epoch_end(self, outputs):
+        if self.global_rank == 0 and outputs:
+            first = outputs[0]
+            self.logger.experiment.add_audio(
+                "val/audio_in", first["audio_input"].data.cpu().numpy(),
+                self.global_step, self.hparams.sample_rate,
+            )
+            self.logger.experiment.add_audio(
+                "val/audio_normal", first["audio_pred_normal"].data.cpu().numpy(),
+                self.global_step, self.hparams.sample_rate,
+            )
+
+        avg_normal = torch.stack([x["mel_loss_normal"] for x in outputs]).mean()
+        avg_aug = torch.stack([x["mel_loss_augmented"] for x in outputs]).mean()
+        avg_composite = torch.stack([x["val_loss"] for x in outputs]).mean()
+
+        self.log("val_loss", avg_composite, sync_dist=True)
+        self.log("val/mel_loss_normal", avg_normal, sync_dist=True)
+        self.log("val/mel_loss_augmented", avg_aug, sync_dist=True)
+
+        for rate in [2.0, 3.0, 4.0]:
+            rate_key = f"{rate}x".replace(".", "_")
+            mel_key = f"mel_loss_{rate_key}"
+            click_key = f"click_rate_{rate_key}"
+            if mel_key in outputs[0]:
+                avg_mel = torch.stack([x[mel_key] for x in outputs]).mean()
+                avg_click = torch.stack([x[click_key] for x in outputs]).mean()
+                self.log(f"val/mel_loss_{rate_key}", avg_mel, sync_dist=True)
+                self.log(f"val/click_rate_{rate_key}", avg_click, sync_dist=True)
+
 
 class QualityGateCallback(pl.Callback):
     def __init__(self):
         self._baseline_mel_loss = None
 
     def on_validation_end(self, trainer, pl_module):
-        mel_loss = trainer.callback_metrics.get("val/mel_loss")
+        mel_loss = trainer.callback_metrics.get("val/mel_loss_normal")
         if mel_loss is None:
             return
         val = mel_loss.item()
@@ -223,7 +299,7 @@ def main():
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=args.checkpoint_dir,
-        monitor="val_loss",
+        monitor="val/composite_loss",
         save_top_k=3,
         every_n_train_steps=2000,
         save_last=True,
