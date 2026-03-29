@@ -33,8 +33,33 @@ Vocos is the better vocoder for time-resampled mel despite occasional clicks. Bi
 
 Initial BigVGAN tests sounded terrible because our `extract_mel` (raw np.log, range -10.6 to +4.1) doesn't match BigVGAN's expected mel format (dynamic_range_compression, range -11.5 to +0.5). Using BigVGAN's native `get_mel_spectrogram` fixed this. Any future vocoder integration must use the vocoder's own mel extraction.
 
-## Next step: fine-tune Vocos on resampled mel
+## Vocos fine-tuning results (2026-03-29)
 
-The ISTFT architecture is right for speech quality. The clicks come from the phase predictor seeing out-of-distribution temporal patterns. Fine-tuning on (resampled-mel, original-waveform) pairs should teach it to predict coherent phase for stretched spectrograms.
+Fine-tuned Vocos on LibriTTS train-clean-100 with resample-roundtrip mel augmentation (downsample mel by random rate then upsample back to original length, creating interpolation artifacts the model learns to handle).
 
-Training data: take clean speech (LibriTTS or our own samples), compute mel, resample at various rates (1.5x-5x) with the same pipeline we use (linear interp, pre-smooth, adaptive smooth), pair with the original waveform segment. The loss is the same as Vocos's original training (multi-resolution STFT loss + mel loss + adversarial).
+### V1: Full training (discriminator + mel loss, 10k steps, 30-50% aug, LR 2e-5)
+- Fewer clicks (10-20% reduction at 3x-4x on Moby Dick clips)
+- BUT: pronounced crackle, metallic artifacts, robotic/hollow at slower speeds
+- Root cause: fresh discriminators (not pretrained) provided harmful adversarial gradients
+- Not usable
+
+### V3: Mel-only (no discriminator, 5k steps, 15-25% aug, LR 1e-5)
+- Crackle mostly gone
+- Clicks reduced at 3x, subtle improvement at 4x
+- Still some light metallic ringing at 2x
+- Voice quality slightly worse than pretrained — not a clear win
+
+### Weight blending (50% pretrained + 50% V3)
+- Best perceptual result — improved timbre quality over both pretrained and pure fine-tuned
+- 4x more listenable than baseline
+- 3x still noticeably clicky
+- Sweet spot for practical use if any fine-tuned weights are used
+
+### Conclusion
+
+Resample-roundtrip augmentation provides marginal click reduction but at a cost to voice quality. The ISTFT phase prediction architecture is the fundamental bottleneck — mel-domain augmentation can't fully teach the model to predict coherent phase for temporally interpolated input. The 50/50 blend is the best practical option but the improvement doesn't clearly justify the complexity.
+
+### Unexplored directions
+- **Phase smoothness regularization**: add loss penalizing phase jumps between adjacent frames, train on normal data only. Directly targets the mechanism without mel augmentation artifacts.
+- **Post-hoc phase smoothing**: smooth the predicted phase AFTER the backbone but before ISTFT, at inference time. Zero training required, but earlier experiments with this ("phase continuity enforcement") produced phasey artifacts.
+- **Hybrid vocoder**: use Vocos for <=2x, switch to BigVGAN for >3x where clicks dominate. Trades speed for quality at high rates only.
