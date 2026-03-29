@@ -348,7 +348,7 @@ def main():
         accelerator="mps",
         devices=1,
         max_steps=args.max_steps,
-        val_check_interval=2000,
+        val_check_interval=1000,
         gradient_clip_val=1.0,
         callbacks=[checkpoint_callback, QualityGateCallback(), eval_callback],
         logger=logger,
