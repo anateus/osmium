@@ -15,3 +15,6 @@ models/
 
 # OS
 .DS_Store
+
+# Training outputs
+training/
