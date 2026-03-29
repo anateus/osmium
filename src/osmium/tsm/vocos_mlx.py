@@ -3,6 +3,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 _model = None
+_model_blended = None
 _mel_basis = None
 _window = None
 
@@ -173,7 +174,10 @@ def extract_mel(samples: np.ndarray, sr: int = 24000, n_fft: int = 1024, hop: in
     return mel
 
 
-def _load_model() -> VocosMLX:
+def _load_model(blended: bool = False) -> VocosMLX:
+    if blended:
+        return _load_blended_model()
+
     global _model
     if _model is not None:
         return _model
@@ -189,6 +193,26 @@ def _load_model() -> VocosMLX:
     mx.eval(model.parameters())
 
     _model = model
+    return model
+
+
+def _load_blended_model() -> VocosMLX:
+    global _model_blended
+    if _model_blended is not None:
+        return _model_blended
+
+    from pathlib import Path
+    weights_path = Path(__file__).parent.parent.parent.parent / "models" / "vocos-mel-24khz-blended" / "weights.npz"
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Blended weights not found at {weights_path}")
+
+    data = dict(np.load(str(weights_path)))
+    model = VocosMLX()
+    weights = [(k, mx.array(v)) for k, v in data.items()]
+    model.load_weights(weights, strict=False)
+    mx.eval(model.parameters())
+
+    _model_blended = model
     return model
 
 
@@ -241,11 +265,12 @@ def vocos_mlx_stretch(
     speed: float,
     sample_rate: int = 24000,
     smoothing_sigma: float = 0.7,
+    blended: bool = False,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
     from scipy.ndimage import gaussian_filter1d
 
-    model = _load_model()
+    model = _load_model(blended=blended)
     mel = extract_mel(samples, sample_rate)
     mel = gaussian_filter1d(mel, sigma=2.0, axis=1)
 
@@ -273,12 +298,13 @@ def vocos_mlx_variable_rate(
     rate_times: np.ndarray,
     sample_rate: int = 24000,
     smoothing_sigma: float = 0.7,
+    blended: bool = False,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
     from scipy.ndimage import gaussian_filter1d
     from osmium.tsm.smooth import adaptive_smooth_mel, apply_hf_deemphasis
 
-    model = _load_model()
+    model = _load_model(blended=blended)
     mel = extract_mel(samples, sample_rate)
 
     T = mel.shape[1]
