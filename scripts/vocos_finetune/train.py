@@ -10,9 +10,7 @@ import transformers
 from vocos.experiment import VocosExp
 from vocos.feature_extractors import MelSpectrogramFeatures
 from vocos.heads import ISTFTHead
-from vocos.helpers import plot_spectrogram_to_numpy
 from vocos.models import VocosBackbone
-from vocos.modules import safe_log
 from vocos.pretrained import Vocos
 
 from scripts.vocos_finetune.augment import random_resample_roundtrip
@@ -116,27 +114,15 @@ class VocosFineTuneExp(VocosExp):
             self.log("generator/mel_loss", mel_loss)
 
             if self.global_step % 1000 == 0 and self.global_rank == 0:
-                self.logger.experiment.add_audio(
-                    "train/audio_in", audio_input[0].data.cpu(), self.global_step, self.hparams.sample_rate
-                )
-                self.logger.experiment.add_audio(
-                    "train/audio_pred", audio_hat[0].data.cpu(), self.global_step, self.hparams.sample_rate
-                )
-                with torch.no_grad():
-                    mel = safe_log(self.melspec_loss.mel_spec(audio_input[0]))
-                    mel_hat = safe_log(self.melspec_loss.mel_spec(audio_hat[0]))
-                self.logger.experiment.add_image(
-                    "train/mel_target",
-                    plot_spectrogram_to_numpy(mel.data.cpu().numpy()),
-                    self.global_step,
-                    dataformats="HWC",
-                )
-                self.logger.experiment.add_image(
-                    "train/mel_pred",
-                    plot_spectrogram_to_numpy(mel_hat.data.cpu().numpy()),
-                    self.global_step,
-                    dataformats="HWC",
-                )
+                try:
+                    self.logger.experiment.add_audio(
+                        "train/audio_in", audio_input[0].data.cpu(), self.global_step, self.hparams.sample_rate
+                    )
+                    self.logger.experiment.add_audio(
+                        "train/audio_pred", audio_hat[0].data.cpu(), self.global_step, self.hparams.sample_rate
+                    )
+                except Exception:
+                    pass
 
             return loss
 
@@ -191,15 +177,18 @@ class VocosFineTuneExp(VocosExp):
 
     def validation_epoch_end(self, outputs):
         if self.global_rank == 0 and outputs:
-            first = outputs[0]
-            self.logger.experiment.add_audio(
-                "val/audio_in", first["audio_input"].data.cpu().numpy(),
-                self.global_step, self.hparams.sample_rate,
-            )
-            self.logger.experiment.add_audio(
-                "val/audio_normal", first["audio_pred_normal"].data.cpu().numpy(),
-                self.global_step, self.hparams.sample_rate,
-            )
+            try:
+                first = outputs[0]
+                self.logger.experiment.add_audio(
+                    "val/audio_in", first["audio_input"].data.cpu().numpy(),
+                    self.global_step, self.hparams.sample_rate,
+                )
+                self.logger.experiment.add_audio(
+                    "val/audio_normal", first["audio_pred_normal"].data.cpu().numpy(),
+                    self.global_step, self.hparams.sample_rate,
+                )
+            except Exception:
+                pass
 
         avg_normal = torch.stack([x["mel_loss_normal"] for x in outputs]).mean()
         avg_aug = torch.stack([x["mel_loss_augmented"] for x in outputs]).mean()
