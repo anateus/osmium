@@ -298,13 +298,14 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--pretrain-mel-steps", type=int, default=999999)
     args = parser.parse_args()
 
     from scripts.vocos_finetune.dataset import AudioDataset
     from torch.utils.data import DataLoader
 
     model = create_model(
-        pretrain_mel_steps=0,
+        pretrain_mel_steps=args.pretrain_mel_steps,
         initial_learning_rate=args.lr,
         max_steps=args.max_steps,
     )
