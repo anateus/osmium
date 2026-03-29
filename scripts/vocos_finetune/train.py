@@ -14,6 +14,7 @@ from vocos.models import VocosBackbone
 from vocos.pretrained import Vocos
 
 from scripts.vocos_finetune.augment import random_resample_roundtrip
+from scripts.vocos_finetune.phase_loss import InstantaneousFrequencyDeviationLoss
 
 
 def compute_aug_ratio(global_step: int) -> float:
@@ -284,6 +285,190 @@ def create_model(
         sample_rate=24000,
         initial_learning_rate=initial_learning_rate,
         pretrain_mel_steps=pretrain_mel_steps,
+    )
+    return model
+
+
+class VocosPhaseRegExp(VocosExp):
+    def __init__(self, *args, phase_coeff: float = 0.05, aug_ratio: float = 0.3, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.phase_coeff = phase_coeff
+        self.aug_ratio = aug_ratio
+        self.ifd_loss = InstantaneousFrequencyDeviationLoss(
+            n_fft=1024, hop_length=256,
+        )
+        self.backbone.requires_grad_(False)
+        self._trainer_ref = None
+
+    @pl.LightningModule.trainer.setter
+    def trainer(self, trainer):
+        self._trainer_ref = trainer
+        pl.LightningModule.trainer.fset(self, trainer)
+
+    def configure_optimizers(self):
+        opt = torch.optim.AdamW(
+            self.head.parameters(),
+            lr=self.hparams.initial_learning_rate,
+            betas=(0.8, 0.9),
+        )
+        max_steps = self.trainer.max_steps
+        scheduler = transformers.get_cosine_schedule_with_warmup(
+            opt, num_warmup_steps=0, num_training_steps=max_steps,
+        )
+        return [opt], [{"scheduler": scheduler, "interval": "step"}]
+
+    def _forward_extract_phase(self, audio_input):
+        features = self.feature_extractor(audio_input)
+
+        is_augmented = self.training and random.random() < self.aug_ratio
+        if is_augmented:
+            features = random_resample_roundtrip(
+                features, min_rate=1.5, max_rate=5.0, presmooth_sigma=2.0,
+            )
+
+        backbone_out = self.backbone(features)
+        T = audio_input.shape[-1]
+
+        x_proj = self.head.out(backbone_out).transpose(1, 2)
+        mag_raw, phase = x_proj.chunk(2, dim=1)
+        mag = torch.exp(mag_raw).clip(max=1e2)
+        S = mag * (torch.cos(phase) + 1j * torch.sin(phase))
+        audio = self.head.istft(S)[..., :T]
+
+        return audio, phase, mag, is_augmented
+
+    def training_step(self, batch, batch_idx, optimizer_idx=0, **kwargs):
+        audio_input = batch
+        audio_hat, phase, mag, is_augmented = self._forward_extract_phase(audio_input)
+
+        mel_loss = self.melspec_loss(audio_hat, audio_input)
+        loss = self.mel_loss_coeff * mel_loss
+
+        self.log("generator/mel_loss", mel_loss, prog_bar=True)
+
+        if is_augmented:
+            phase_loss = self.ifd_loss(phase, mag)
+            loss = loss + self.phase_coeff * phase_loss
+            self.log("generator/phase_ifd_loss", phase_loss, prog_bar=True)
+
+        self.log("generator/total_loss", loss, prog_bar=True)
+
+        if self.global_step % 1000 == 0 and self.global_rank == 0:
+            try:
+                self.logger.experiment.add_audio(
+                    "train/audio_in", audio_input[0].data.cpu(),
+                    self.global_step, self.hparams.sample_rate,
+                )
+                self.logger.experiment.add_audio(
+                    "train/audio_pred", audio_hat[0].data.cpu(),
+                    self.global_step, self.hparams.sample_rate,
+                )
+            except Exception:
+                pass
+
+        return loss
+
+    def validation_step(self, batch, batch_idx, **kwargs):
+        audio_input = batch
+        from scripts.vocos_finetune.augment import resample_roundtrip
+        from scripts.vocos_finetune.click_detector import clicks_per_second
+        import numpy as np
+
+        T = audio_input.shape[-1]
+        features = self.feature_extractor(audio_input)
+        backbone_out = self.backbone(features)
+        audio_hat_normal = self.head(backbone_out)[..., :T]
+        mel_loss_normal = self.melspec_loss(audio_hat_normal, audio_input)
+
+        result = {
+            "val_loss": mel_loss_normal,
+            "mel_loss_normal": mel_loss_normal,
+        }
+
+        mel_losses_aug = []
+        for rate in [2.0, 3.0, 4.0]:
+            features_aug = resample_roundtrip(features.clone(), rate=rate, presmooth_sigma=2.0)
+            backbone_aug = self.backbone(features_aug)
+
+            x_proj = self.head.out(backbone_aug).transpose(1, 2)
+            mag_raw, phase = x_proj.chunk(2, dim=1)
+            mag = torch.exp(mag_raw).clip(max=1e2)
+            S = mag * (torch.cos(phase) + 1j * torch.sin(phase))
+            audio_hat_aug = self.head.istft(S)[..., :T]
+
+            mel_loss_aug = self.melspec_loss(audio_hat_aug, audio_input)
+            phase_loss_aug = self.ifd_loss(phase, mag)
+            mel_losses_aug.append(mel_loss_aug)
+
+            audio_np = audio_hat_aug[0].detach().cpu().numpy()
+            click_rate = clicks_per_second(audio_np, sample_rate=self.hparams.sample_rate)
+
+            rate_key = f"{rate}x".replace(".", "_")
+            result[f"mel_loss_{rate_key}"] = mel_loss_aug
+            result[f"phase_ifd_{rate_key}"] = phase_loss_aug
+            result[f"click_rate_{rate_key}"] = torch.tensor(click_rate)
+
+        avg_aug_loss = torch.stack(mel_losses_aug).mean()
+        composite = 0.5 * mel_loss_normal + 0.5 * avg_aug_loss
+        result["mel_loss_augmented"] = avg_aug_loss
+        result["val_loss"] = composite
+
+        self.log("val/mel_loss_normal", mel_loss_normal, prog_bar=True)
+        self.log("val/mel_loss_augmented", avg_aug_loss, prog_bar=True)
+        self.log("val/composite_loss", composite, prog_bar=True)
+
+        return result
+
+    def validation_epoch_end(self, outputs):
+        if not outputs:
+            return
+        avg_normal = torch.stack([x["mel_loss_normal"] for x in outputs]).mean()
+        avg_aug = torch.stack([x["mel_loss_augmented"] for x in outputs]).mean()
+        avg_composite = torch.stack([x["val_loss"] for x in outputs]).mean()
+
+        self.log("val_loss", avg_composite, sync_dist=True)
+        self.log("val/mel_loss_normal", avg_normal, sync_dist=True)
+        self.log("val/mel_loss_augmented", avg_aug, sync_dist=True)
+
+        for rate in [2.0, 3.0, 4.0]:
+            rate_key = f"{rate}x".replace(".", "_")
+            for prefix in ["mel_loss", "phase_ifd", "click_rate"]:
+                key = f"{prefix}_{rate_key}"
+                if key in outputs[0]:
+                    avg = torch.stack([x[key] for x in outputs]).mean()
+                    self.log(f"val/{key}", avg, sync_dist=True)
+
+    def on_before_optimizer_step(self, optimizer, optimizer_idx=0):
+        grad = self.head.out.weight.grad
+        if grad is not None:
+            self.log("grad_norm/head_out_weight", grad.norm().item())
+
+
+def create_phase_reg_model(
+    phase_coeff: float = 0.05,
+    initial_learning_rate: float = 1e-5,
+    max_steps: int = 5000,
+) -> VocosPhaseRegExp:
+    feature_extractor = MelSpectrogramFeatures(
+        sample_rate=24000, n_fft=1024, hop_length=256, n_mels=100
+    )
+    backbone = VocosBackbone(
+        input_channels=100, dim=512, intermediate_dim=1536, num_layers=8
+    )
+    head = ISTFTHead(dim=512, n_fft=1024, hop_length=256)
+
+    pretrained = Vocos.from_pretrained("charactr/vocos-mel-24khz")
+    backbone.load_state_dict(pretrained.backbone.state_dict())
+    head.load_state_dict(pretrained.head.state_dict())
+
+    model = VocosPhaseRegExp(
+        feature_extractor=feature_extractor,
+        backbone=backbone,
+        head=head,
+        sample_rate=24000,
+        initial_learning_rate=initial_learning_rate,
+        pretrain_mel_steps=999999,
+        phase_coeff=phase_coeff,
     )
     return model
 
