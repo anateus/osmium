@@ -17,12 +17,12 @@ from scripts.vocos_finetune.augment import random_resample_roundtrip
 
 
 def compute_aug_ratio(global_step: int) -> float:
-    if global_step <= 2000:
-        return 0.3
-    elif global_step <= 4000:
-        return 0.3 + 0.2 * (global_step - 2000) / 2000
+    if global_step <= 1000:
+        return 0.15
+    elif global_step <= 3000:
+        return 0.15 + 0.10 * (global_step - 1000) / 2000
     else:
-        return 0.5
+        return 0.25
 
 
 class VocosFineTuneExp(VocosExp):

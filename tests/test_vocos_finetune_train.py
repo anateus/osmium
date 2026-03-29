@@ -37,11 +37,11 @@ def test_no_augment_when_ratio_zero(dummy_audio_batch):
 
 def test_aug_ratio_ramp():
     from scripts.vocos_finetune.train import compute_aug_ratio
-    assert abs(compute_aug_ratio(0) - 0.3) < 1e-6
-    assert abs(compute_aug_ratio(2000) - 0.3) < 1e-6
-    assert abs(compute_aug_ratio(3000) - 0.4) < 1e-6
-    assert abs(compute_aug_ratio(4000) - 0.5) < 1e-6
-    assert abs(compute_aug_ratio(8000) - 0.5) < 1e-6
+    assert abs(compute_aug_ratio(0) - 0.15) < 1e-6
+    assert abs(compute_aug_ratio(1000) - 0.15) < 1e-6
+    assert abs(compute_aug_ratio(2000) - 0.20) < 1e-6
+    assert abs(compute_aug_ratio(3000) - 0.25) < 1e-6
+    assert abs(compute_aug_ratio(5000) - 0.25) < 1e-6
 
 
 def test_validation_step_returns_separate_metrics(dummy_audio_batch):
