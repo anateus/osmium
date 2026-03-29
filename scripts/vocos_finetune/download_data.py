@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 
 URL = "https://www.openslr.org/resources/60/train-clean-100.tar.gz"
-MD5 = "2c05cecece06364326d57678c8791e82"
+MD5 = "29c6aa849b4f3412a9ad0f400176a988"
 ARCHIVE_NAME = "train-clean-100.tar.gz"
 EXTRACT_SUBDIR = "LibriTTS/train-clean-100"
 VAL_SIZE = 200
