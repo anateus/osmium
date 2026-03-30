@@ -267,6 +267,7 @@ def vocos_mlx_stretch(
     smoothing_sigma: float = 0.7,
     blended: bool = False,
     declick_audio: bool = True,
+    post_process_kwargs: dict | None = None,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
     from scipy.ndimage import gaussian_filter1d
@@ -291,9 +292,11 @@ def vocos_mlx_stretch(
     mx.eval(audio)
 
     result = np.array(audio).squeeze().astype(np.float32)
-    if declick_audio:
-        from osmium.tsm.declick import declick
-        result = declick(result, sample_rate=sample_rate)
+    from osmium.tsm.post_process import post_process
+    pp_kwargs = {"declick": declick_audio, "sample_rate": sample_rate}
+    if post_process_kwargs:
+        pp_kwargs.update(post_process_kwargs)
+    result = post_process(result, **pp_kwargs)
     return result
 
 
@@ -305,6 +308,7 @@ def vocos_mlx_variable_rate(
     smoothing_sigma: float = 0.7,
     blended: bool = False,
     declick_audio: bool = True,
+    post_process_kwargs: dict | None = None,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
     from scipy.ndimage import gaussian_filter1d
@@ -352,7 +356,9 @@ def vocos_mlx_variable_rate(
     mx.eval(audio)
 
     result = np.array(audio).squeeze().astype(np.float32)
-    if declick_audio:
-        from osmium.tsm.declick import declick
-        result = declick(result, sample_rate=sample_rate)
+    from osmium.tsm.post_process import post_process
+    pp_kwargs = {"declick": declick_audio, "sample_rate": sample_rate}
+    if post_process_kwargs:
+        pp_kwargs.update(post_process_kwargs)
+    result = post_process(result, **pp_kwargs)
     return result

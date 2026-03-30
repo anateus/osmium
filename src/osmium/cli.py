@@ -27,7 +27,11 @@ from osmium.io.encode import encode
 @click.option("--no-phoneme", is_flag=True, help="Disable phoneme-class importance floors")
 @click.option("--phoneme-align", is_flag=True, help="Use forced alignment for precise phoneme boundaries (requires whisper)")
 @click.option("--vocos-blended", is_flag=True, help="Use blended vocoder weights (slightly better timbre at high speeds)")
-def main(input_files, speed, output_file, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma, no_phoneme, phoneme_align, vocos_blended):
+@click.option("--no-declick", is_flag=True, help="Disable post-processing click removal")
+@click.option("--declick-threshold", type=float, default=5.0, help="Declick sensitivity (lower=more aggressive, default 5.0)")
+@click.option("--no-room", is_flag=True, help="Disable subtle room ambience")
+@click.option("--no-warm", is_flag=True, help="Disable warm dither")
+def main(input_files, speed, output_file, resolution, uniform, mimi, smoothing, chunk_duration, analyze_only, no_prosody, denoise, rate_gamma, no_phoneme, phoneme_align, vocos_blended, no_declick, declick_threshold, no_room, no_warm):
     """Osmium — high-quality speech acceleration."""
     if not output_file and not analyze_only:
         raise click.UsageError("Either --output or --analyze-only is required")
@@ -41,10 +45,16 @@ def main(input_files, speed, output_file, resolution, uniform, mimi, smoothing, 
     if denoise == "none":
         denoise = None
 
-    _batch_mode(input_files, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody, denoise=denoise, rate_gamma=rate_gamma, no_phoneme=no_phoneme, phoneme_align=phoneme_align, vocos_blended=vocos_blended)
+    post_process_kwargs = {
+        "declick": not no_declick,
+        "declick_threshold": declick_threshold,
+        "room": not no_room,
+        "warm_dither": not no_warm,
+    }
+    _batch_mode(input_files, speed, output_file, uniform, mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=not no_prosody, denoise=denoise, rate_gamma=rate_gamma, no_phoneme=no_phoneme, phoneme_align=phoneme_align, vocos_blended=vocos_blended, post_process_kwargs=post_process_kwargs)
 
 
-def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False, denoise=None, rate_gamma=1.5, no_phoneme=False, phoneme_align=False, vocos_blended=False):
+def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, smoothing, analyze_only, chunk_duration, use_prosody=False, denoise=None, rate_gamma=1.5, no_phoneme=False, phoneme_align=False, vocos_blended=False, post_process_kwargs=None):
     from rich.console import Console
     from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
@@ -77,7 +87,7 @@ def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, 
                 input_file, speed, uniform, use_mimi, resolution_s, smoothing,
                 analyze_only, chunk_duration, use_prosody, denoise, rate_gamma,
                 progress, console, output_file, no_phoneme, phoneme_align,
-                vocos_blended=vocos_blended,
+                vocos_blended=vocos_blended, post_process_kwargs=post_process_kwargs,
             )
             if analyze_only:
                 return
@@ -104,7 +114,7 @@ def _batch_mode(input_files, speed, output_file, uniform, use_mimi, resolution, 
         console.print(f"  [dim]→ {output_file}[/dim]")
 
 
-def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing, analyze_only, chunk_duration, use_prosody, denoise, rate_gamma, progress, console, output_file, no_phoneme=False, phoneme_align=False, vocos_blended=False):
+def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing, analyze_only, chunk_duration, use_prosody, denoise, rate_gamma, progress, console, output_file, no_phoneme=False, phoneme_align=False, vocos_blended=False, post_process_kwargs=None):
     probe_dur = probe_duration(input_file)
 
     decode_task = progress.add_task("Decoding", total=probe_dur, status="")
@@ -210,13 +220,13 @@ def _process_file(input_file, speed, uniform, use_mimi, resolution_s, smoothing,
                 output_samples = vocos_mlx_variable_rate(
                     audio.samples, rate_curve, rate_times,
                     sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                    blended=vocos_blended,
+                    blended=vocos_blended, post_process_kwargs=post_process_kwargs,
                 )
             else:
                 output_samples = vocos_mlx_stretch(
                     audio.samples, speed,
                     sample_rate=audio.sample_rate, smoothing_sigma=smoothing,
-                    blended=vocos_blended,
+                    blended=vocos_blended, post_process_kwargs=post_process_kwargs,
                 )
         except (ImportError, Exception):
             from osmium.tsm.vocos_engine import vocos_stretch, vocos_variable_rate
