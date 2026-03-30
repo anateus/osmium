@@ -70,8 +70,27 @@ Added instantaneous frequency deviation (IFD) loss penalizing phase jumps betwee
 - mel_loss_normal didn't regress (0.241 → 0.223)
 - Codex review predicted "small improvement possible, not a real fix" for head-only — confirmed
 
+### V2: Head-only (phase_coeff=0.3, 5K steps)
+- Phase IFD loss: 0.032 (higher coefficient pushes harder but head saturated)
+- Perceptual: "noticeable quality improvement for 3x and 4x but not major"
+- mel_loss_normal unchanged (0.223) — no regression
+- 50/50 blend with pretrained shipped as updated --vocos-blended weights
+
+### Post-processing de-click filter (shipped)
+- Detects transient energy spikes, attenuates with crossfaded gain
+- Gentle defaults: threshold=5.0, attenuation=0.5, crossfade=2ms
+- 19-31% click reduction without introducing artifacts
+- Enabled by default in vocos_mlx_stretch and vocos_mlx_variable_rate
+- Combined with blended vocoder = current best pipeline
+
+### Super-resolution preprocessing (not shipping)
+- ClearerVoice MossFormer2_SR_48K: enriches harmonics but INCREASES click count (+20-66%)
+- Perceptually sounds slightly better due to noise masking effect
+- Not worth the ~1hr preprocessing cost per audiobook
+- Key insight: richer mel = more phase prediction failures during interpolation
+
 ### Assessment
-Head-only training doesn't have enough capacity to reshape phase prediction. The linear projection is the wrong bottleneck to target — the backbone features determine what information is available for phase coherence. Next steps: (1) post-processing de-click filter, (2) bump phase_coeff, (3) unfreeze backbone layers.
+Head-only phase reg gives modest improvement at high speeds. The linear projection is the wrong bottleneck — backbone features determine what's available for phase coherence. The declick filter provides the most practical click reduction. The best pipeline is: blended vocoder + gentle declick (both shipped, enabled by default).
 
 ### Unexplored directions
 - **Post-hoc phase smoothing**: smooth the predicted phase AFTER the backbone but before ISTFT, at inference time. Zero training required, but earlier experiments with this ("phase continuity enforcement") produced phasey artifacts.
