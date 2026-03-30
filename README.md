@@ -59,6 +59,11 @@ osmium input.mp3 -s 3.0 --analyze-only -o importance.json
 | `--no-prosody` | | Disable sentence-level rhythm preservation |
 | `--resolution` | 20ms | Importance map time resolution |
 | `--smoothing` | 0.7 | Mel smoothing sigma; adaptive in variable-rate mode (0 = off) |
+| `--vocos-blended` | | Use blended vocoder weights (better timbre at high speeds) |
+| `--no-declick` | | Disable click removal post-processing |
+| `--declick-threshold` | 5.0 | Click detection sensitivity (lower = more aggressive) |
+| `--no-room` | | Disable subtle room ambience |
+| `--no-warm` | | Disable warm dither |
 | `--chunk-size` | auto | Process in chunks of N seconds |
 | `--analyze-only` | | Dump importance map as JSON |
 
@@ -68,6 +73,7 @@ osmium input.mp3 -s 3.0 --analyze-only -o importance.json
 2. **Analyze** -- compute per-frame importance from the mel spectrogram (spectral flux + energy, with a 2.5x boost for high-frequency consonant bands)
 3. **Schedule** -- convert importance to a variable rate curve with contrast compression (`--rate-gamma`), hitting the target speed while giving more time to important frames
 4. **Stretch** -- resample the mel spectrogram according to the rate curve with adaptive smoothing (more smoothing where compression is high, less where consonants need sharp attacks), then reconstruct audio with the Vocos neural vocoder
+5. **Post-process** -- three-stage cleanup of vocoder output: (a) declick removes transient energy spikes from ISTFT phase discontinuities, (b) subtle room ambience adds early reflections that perceptually mask remaining artifacts, (c) warm dither adds low-frequency shaped noise for natural warmth. All on by default, individually toggleable.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full picture.
 

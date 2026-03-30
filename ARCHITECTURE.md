@@ -26,7 +26,10 @@ audio file
   │
   ├─ Stage 3: time-scale modification
   │    resample mel → adaptive smoothing → HF de-emphasis → Vocos vocoder
-  │    → spectral tilt correction → waveform
+  │
+  ├─ Stage 4: post-processing
+  │    declick → room ambience → warm dither → spectral tilt → normalize
+  │    (each toggleable: --no-declick, --no-room, --no-warm)
   │
   └─ encode (ffmpeg → mp3/m4a/wav/flac)
 ```
@@ -157,9 +160,25 @@ The **CREPE hybrid** routed voiced segments to PSOLA and unvoiced to phase vocod
 
 ## Post-processing
 
+### Vocoder output cleanup
+
+`tsm/post_process.py`, `tsm/declick.py`
+
+Three-stage post-processing applied to the Vocos output, all enabled by default:
+
+1. **Declick** (`tsm/declick.py`): detects transient energy spikes (from ISTFT phase discontinuities) using a per-frame median ratio test. Frames exceeding `threshold * local_median` get attenuated with crossfaded gain to avoid introducing new artifacts. Gentle defaults: threshold=5.0, attenuation=0.5, crossfade=2ms. Reduces measured click rate by 19-31%.
+
+2. **Room ambience** (`tsm/post_process.py`): convolves with a synthetic small-room impulse response (80ms RT60, 6 early reflections). The early reflections perceptually mask remaining click artifacts the same way room acoustics mask recording imperfections. The effect is subtle — not audible as reverb, just a slightly less "bare" sound.
+
+3. **Warm dither** (`tsm/post_process.py`): adds low-frequency shaped noise at -60dB, low-passed at 1500Hz. Provides warmth similar to analog tape hiss. Based on the finding that ClearerVoice super-resolution improved perceived quality despite increasing click counts — the synthetic harmonics acted as perceptual masking noise.
+
+Each stage is individually toggleable via CLI flags (`--no-declick`, `--no-room`, `--no-warm`) and `--declick-threshold` adjusts sensitivity.
+
+### Signal correction
+
 `cli.py` (_match_spectral_tilt, _soft_clip_and_normalize)
 
-Two post-processing steps after Vocos synthesis:
+Two additional post-processing steps:
 
 1. **Spectral tilt correction**: compares the average spectral shape of the input audio against the output and applies a smooth corrective EQ (capped at ±4.5dB per frequency bin, Gaussian-smoothed across bins). This catches any tonal shifts the vocoder introduces regardless of cause.
 
@@ -197,7 +216,9 @@ src/osmium/
 │   ├── vocos_mlx.py        Vocos vocoder (MLX) + mel extraction
 │   ├── vocos_engine.py     Vocos vocoder (PyTorch fallback)
 │   ├── smooth.py           adaptive mel smoothing + HF de-emphasis
-│   └── rate_schedule.py    importance → rate curve with gamma compression
+│   ├── rate_schedule.py    importance → rate curve with gamma compression
+│   ├── post_process.py     vocoder output cleanup (declick + room + warm dither)
+│   └── declick.py          transient energy spike detection and attenuation
 └── io/
     ├── decode.py           ffmpeg decode to 24kHz mono
     └── encode.py           ffmpeg encode to mp3/m4a/wav/flac
