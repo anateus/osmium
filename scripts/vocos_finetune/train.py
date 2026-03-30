@@ -547,3 +547,74 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def main_phase_reg():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train-filelist", required=True)
+    parser.add_argument("--val-filelist", required=True)
+    parser.add_argument("--checkpoint-dir", default="checkpoints/vocos_phase_reg")
+    parser.add_argument("--log-dir", default="logs/vocos_phase_reg")
+    parser.add_argument("--max-steps", type=int, default=5000)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--phase-coeff", type=float, default=0.05)
+    parser.add_argument("--resume", action="store_true")
+    args = parser.parse_args()
+
+    from scripts.vocos_finetune.dataset import AudioDataset
+    from torch.utils.data import DataLoader
+
+    model = create_phase_reg_model(
+        phase_coeff=args.phase_coeff,
+        initial_learning_rate=args.lr,
+        max_steps=args.max_steps,
+    )
+
+    train_dataset = AudioDataset(
+        filelist_path=args.train_filelist, num_samples=24000, sample_rate=24000, train=True
+    )
+    val_dataset = AudioDataset(
+        filelist_path=args.val_filelist, num_samples=24000, sample_rate=24000, train=False
+    )
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True
+    )
+
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        dirpath=args.checkpoint_dir,
+        monitor="val/composite_loss",
+        save_top_k=3,
+        every_n_train_steps=2000,
+        save_last=True,
+    )
+
+    logger = pl.loggers.TensorBoardLogger(save_dir=args.log_dir, name="vocos_phase_reg")
+
+    resume_path = None
+    if args.resume:
+        last_ckpt = os.path.join(args.checkpoint_dir, "last.ckpt")
+        if os.path.exists(last_ckpt):
+            resume_path = last_ckpt
+
+    eval_callback = EvalSampleCallback(
+        val_filelist=args.val_filelist,
+        output_base=Path("training/eval_samples_phase_reg"),
+        model_type="phase_reg",
+    )
+
+    trainer = pl.Trainer(
+        accelerator="mps",
+        devices=1,
+        max_steps=args.max_steps,
+        val_check_interval=1000,
+        gradient_clip_val=1.0,
+        callbacks=[checkpoint_callback, QualityGateCallback(), eval_callback],
+        logger=logger,
+    )
+
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=resume_path)
