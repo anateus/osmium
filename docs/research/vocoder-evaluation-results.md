@@ -59,7 +59,21 @@ Fine-tuned Vocos on LibriTTS train-clean-100 with resample-roundtrip mel augment
 
 Resample-roundtrip augmentation provides marginal click reduction but at a cost to voice quality. The ISTFT phase prediction architecture is the fundamental bottleneck — mel-domain augmentation can't fully teach the model to predict coherent phase for temporally interpolated input. The 50/50 blend is the best practical option but the improvement doesn't clearly justify the complexity.
 
+## Phase smoothness regularization results (2026-03-29)
+
+Added instantaneous frequency deviation (IFD) loss penalizing phase jumps between adjacent STFT frames on augmented mel inputs. Magnitude-weighted, atan2-wrapped, excluding DC/Nyquist. Trained head-only (backbone frozen, 526K params), mel_coeff=45, phase_coeff=0.05, LR=1e-5, 5K steps.
+
+### Head-only (phase_coeff=0.05, 5K steps)
+- Phase IFD loss: 0.024 → 0.021 (12% reduction, modest)
+- Click rates on Moby Dick clips: ~4% reduction on average, mixed at 3x
+- Perceptual: "maybe a tad better but not way better"
+- mel_loss_normal didn't regress (0.241 → 0.223)
+- Codex review predicted "small improvement possible, not a real fix" for head-only — confirmed
+
+### Assessment
+Head-only training doesn't have enough capacity to reshape phase prediction. The linear projection is the wrong bottleneck to target — the backbone features determine what information is available for phase coherence. Next steps: (1) post-processing de-click filter, (2) bump phase_coeff, (3) unfreeze backbone layers.
+
 ### Unexplored directions
-- **Phase smoothness regularization**: add loss penalizing phase jumps between adjacent frames, train on normal data only. Directly targets the mechanism without mel augmentation artifacts.
 - **Post-hoc phase smoothing**: smooth the predicted phase AFTER the backbone but before ISTFT, at inference time. Zero training required, but earlier experiments with this ("phase continuity enforcement") produced phasey artifacts.
 - **Hybrid vocoder**: use Vocos for <=2x, switch to BigVGAN for >3x where clicks dominate. Trades speed for quality at high rates only.
+- **Phase distillation**: target pretrained model's phase delta instead of zero IFD.
