@@ -266,6 +266,7 @@ def vocos_mlx_stretch(
     sample_rate: int = 24000,
     smoothing_sigma: float = 0.7,
     blended: bool = False,
+    declick_audio: bool = True,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
     from scipy.ndimage import gaussian_filter1d
@@ -289,7 +290,11 @@ def vocos_mlx_stretch(
     audio = model(features)
     mx.eval(audio)
 
-    return np.array(audio).squeeze().astype(np.float32)
+    result = np.array(audio).squeeze().astype(np.float32)
+    if declick_audio:
+        from osmium.tsm.declick import declick
+        result = declick(result, sample_rate=sample_rate)
+    return result
 
 
 def vocos_mlx_variable_rate(
@@ -299,6 +304,7 @@ def vocos_mlx_variable_rate(
     sample_rate: int = 24000,
     smoothing_sigma: float = 0.7,
     blended: bool = False,
+    declick_audio: bool = True,
 ) -> np.ndarray:
     from scipy.interpolate import interp1d
     from scipy.ndimage import gaussian_filter1d
@@ -345,4 +351,8 @@ def vocos_mlx_variable_rate(
     audio = model(features)
     mx.eval(audio)
 
-    return np.array(audio).squeeze().astype(np.float32)
+    result = np.array(audio).squeeze().astype(np.float32)
+    if declick_audio:
+        from osmium.tsm.declick import declick
+        result = declick(result, sample_rate=sample_rate)
+    return result
