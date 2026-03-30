@@ -9,11 +9,15 @@ import torchaudio
 from scripts.vocos_finetune.click_detector import clicks_per_second
 
 
-def load_finetuned_model(checkpoint_path: Path):
-    from scripts.vocos_finetune.train import create_model
-    model = create_model(pretrain_mel_steps=0, initial_learning_rate=1e-4, max_steps=1)
+def load_finetuned_model(checkpoint_path: Path, model_type: str = "finetune"):
+    if model_type == "phase_reg":
+        from scripts.vocos_finetune.train import create_phase_reg_model
+        model = create_phase_reg_model(phase_coeff=0.05, initial_learning_rate=1e-5, max_steps=1)
+    else:
+        from scripts.vocos_finetune.train import create_model
+        model = create_model(pretrain_mel_steps=0, initial_learning_rate=1e-4, max_steps=1)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
-    model.load_state_dict(ckpt["state_dict"])
+    model.load_state_dict(ckpt["state_dict"], strict=False)
     model.eval()
     return model
 
@@ -25,6 +29,7 @@ def generate_samples(
     n_utterances: int = 5,
     speeds: list[float] = [2.0, 3.0, 4.0],
     sample_rate: int = 24000,
+    model_type: str = "finetune",
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -35,7 +40,7 @@ def generate_samples(
     baseline = Vocos.from_pretrained("charactr/vocos-mel-24khz")
     baseline.eval()
 
-    finetuned = load_finetuned_model(checkpoint_path)
+    finetuned = load_finetuned_model(checkpoint_path, model_type=model_type)
 
     readme_lines = ["# A/B Comparison Samples\n"]
 
@@ -98,6 +103,7 @@ def main():
     parser.add_argument("--val-filelist", type=Path, default=Path("training/data/filelists/val.txt"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--n-utterances", type=int, default=5)
+    parser.add_argument("--model-type", choices=["finetune", "phase_reg"], default="finetune")
     args = parser.parse_args()
 
     generate_samples(
@@ -105,6 +111,7 @@ def main():
         val_filelist=args.val_filelist,
         output_dir=args.output_dir,
         n_utterances=args.n_utterances,
+        model_type=args.model_type,
     )
 
 

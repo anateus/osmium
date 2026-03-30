@@ -226,10 +226,11 @@ class QualityGateCallback(pl.Callback):
 
 
 class EvalSampleCallback(pl.Callback):
-    def __init__(self, val_filelist, output_base, every_n_steps=2000):
+    def __init__(self, val_filelist, output_base, every_n_steps=2000, model_type="finetune"):
         self.val_filelist = val_filelist
         self.output_base = Path(output_base)
         self.every_n_steps = every_n_steps
+        self.model_type = model_type
         self._last_step = -1
 
     def on_validation_end(self, trainer, pl_module):
@@ -254,6 +255,7 @@ class EvalSampleCallback(pl.Callback):
                 val_filelist=self.val_filelist,
                 output_dir=output_dir,
                 n_utterances=5,
+                model_type=self.model_type,
             )
         except Exception as e:
             print(f"Warning: eval sample generation failed at step {step}: {e}")
